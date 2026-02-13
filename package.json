@@ -1,0 +1,41 @@
+{
+  "name": "tactical-cesium-sdk",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/tactical-cesium-sdk.umd.cjs",
+  "module": "./dist/tactical-cesium-sdk.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/tactical-cesium-sdk.js",
+      "require": "./dist/tactical-cesium-sdk.umd.cjs"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "theme:template": "node tools/create_theme_pack_template.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^20.0.0",
+    "eslint": "^9.39.2",
+    "globals": "^17.3.0",
+    "sass": "^1.69.0",
+    "typescript": "^5.2.2",
+    "typescript-eslint": "^8.55.0",
+    "vite": "^5.0.0",
+    "vite-plugin-cesium": "^1.2.22",
+    "vite-plugin-dts": "^3.6.0"
+  },
+  "dependencies": {
+    "cesium": "^1.110.0",
+    "i18next": "^25.8.7"
+  }
+}

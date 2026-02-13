@@ -1,0 +1,15 @@
+/* 导入 Cesium 默认样式 (用于布局等) */
+@import 'cesium/Build/Cesium/Widgets/widgets.css';
+/* 导入主题变量 */
+@import './variables.css';
+
+/* 全局重置或基础样式 */
+body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--color-bg-main);
+    color: #fff;
+    font-family: var(--font-sans);
+    overflow: hidden;
+    /* 防止滚动条 */
+}

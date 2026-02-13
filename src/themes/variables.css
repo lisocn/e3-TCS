@@ -1,0 +1,163 @@
+/**
+ * 战术主题变量定义
+ * 对应 README 中的样式规范
+ */
+:root {
+  /* 语义色彩 (Semantic Colors) */
+  --color-primary: #00f0ff;       /* 主色调 (数据/高亮) - Electric Cyan */
+  --color-accent: #00ff88;
+  --color-warning: #ff9900;       /* 警告/异常 - Orange */
+  --color-danger: #ff4d4f;
+  --color-bg-main: #0b0f19;       /* 全局背景 - Deep Slate */
+  --color-bg-panel: rgba(16, 24, 39, 0.75); /* 面板背景 - Slate Glass */
+  --color-control-bg: #111822;
+  --color-control-border: rgba(0, 240, 255, 0.35);
+  --color-control-text: #cde5ff;
+  --color-log-text: #9aa8b6;
+  --color-hud-text: #00ff99;
+  --color-hud-border: rgba(0, 255, 153, 0.45);
+  --color-hud-bg: rgba(0, 0, 0, 0.62);
+  --panel-border-color: rgba(0, 240, 255, 0.2);
+  --panel-hover-glow: rgba(0, 240, 255, 0.2);
+  --panel-radius: 4px;
+  --panel-blur: 8px;
+
+  /* 字体 (Fonts) */
+  /* 注意：字体文件需本地化，此处仅定义栈 */
+  --font-mono: 'JetBrains Mono', monospace;  /* 战术数据/HUD字体 */
+  --font-sans: 'Inter', system-ui, sans-serif; /* 通用字体 */
+}
+
+[data-ui-theme-pack='commandCenter'] {
+  --color-primary: #00f0ff;
+  --color-accent: #00ff88;
+  --color-warning: #ffcc00;
+  --color-danger: #ff4d4f;
+  --color-bg-main: #0b0f19;
+  --color-bg-panel: rgba(16, 24, 39, 0.78);
+  --color-control-bg: #111822;
+  --color-control-border: rgba(0, 240, 255, 0.35);
+  --color-control-text: #cde5ff;
+  --color-log-text: #9aa8b6;
+  --color-hud-text: #00ff99;
+  --color-hud-border: rgba(0, 255, 153, 0.45);
+  --color-hud-bg: rgba(0, 0, 0, 0.62);
+}
+
+[data-ui-theme-pack='battlefieldSand'] {
+  --color-primary: #ffd15c;
+  --color-accent: #7be495;
+  --color-warning: #ff9f1c;
+  --color-danger: #ff595e;
+  --color-bg-main: #1a1b14;
+  --color-bg-panel: rgba(44, 38, 26, 0.78);
+  --color-control-bg: #2d261b;
+  --color-control-border: rgba(255, 209, 92, 0.38);
+  --color-control-text: #f1e6c8;
+  --color-log-text: #d7c7a6;
+  --color-hud-text: #8cffbe;
+  --color-hud-border: rgba(140, 255, 190, 0.45);
+  --color-hud-bg: rgba(10, 9, 6, 0.68);
+}
+
+/* 标准 UI 组件类 (Utility Classes) */
+
+/* 战术面板：标准容器样式 */
+.tactical-panel {
+  background-color: var(--color-bg-panel);
+  border: 1px solid var(--panel-border-color); /* 微弱的 Primary 边框 */
+  backdrop-filter: blur(var(--panel-blur)); /* 磨砂玻璃效果 */
+  border-radius: var(--panel-radius);
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  color: #fff;
+}
+
+.tactical-panel:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 15px var(--panel-hover-glow); /* 悬停发光 */
+}
+
+/* 数据值：用于展示关键数字 */
+.data-value {
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+  text-shadow: 0 0 5px var(--color-primary); /* 荧光阴影 */
+  font-weight: bold;
+}
+
+/* 数据标签：用于展示标签 */
+.data-label {
+  font-family: var(--font-sans);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.control-row {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-label {
+  width: 112px;
+  flex: 0 0 112px;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--color-control-text) 70%, #7b8794);
+  line-height: 1.2;
+}
+
+.control-input,
+.control-button {
+  background: var(--color-control-bg);
+  color: var(--color-control-text);
+  border: 1px solid var(--color-control-border);
+  font-size: 11px;
+  height: 30px;
+  box-sizing: border-box;
+}
+
+.control-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.control-button {
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.status-text {
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+.terrain-status-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-top: 4px;
+  color: var(--color-warning);
+}
+
+.diag-logs {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-log-text);
+  margin-top: 5px;
+  height: 100px;
+  overflow-y: auto;
+}
+
+.diag-button {
+  margin-top: 10px;
+  background: var(--color-control-bg);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  cursor: pointer;
+  padding: 5px 10px;
+}
