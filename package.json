@@ -20,7 +20,12 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "theme:template": "node tools/create_theme_pack_template.mjs"
+    "theme:template": "node tools/create_theme_pack_template.mjs",
+    "config:stable": "node tools/select_runtime_config.mjs stable",
+    "config:adaptive": "node tools/select_runtime_config.mjs adaptive",
+    "gate:baseline:elevation": "EXPECT_MODE=STABLE_GLOBAL_IMAGERY_BASELINE EXPECT_TERRAIN_PROVIDER=CesiumTerrainProvider MIN_TERRAIN_SPAN=500 ./.venv/bin/python tests/visual_verification.py",
+    "gate:stage2:matrix": "STAGE2_PERF_DURATION_SECONDS=45 ./.venv/bin/python -u tests/stage2_matrix.py",
+    "gate:stage2:soak": "SOAK_ROUNDS=3 SOAK_DURATION_SECONDS=200 TERRAIN_OPERATION_MODE=adaptiveLod ADAPTIVE_LOD_MAX_PROFILE=tactical ENABLE_GLOBAL_MATERIAL_ATTEMPT=true ./.venv/bin/python -u tests/lod_soak_test.py"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

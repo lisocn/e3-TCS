@@ -11,32 +11,46 @@ import {
     ScreenSpaceEventType,
     Cartesian2
 } from 'cesium';
-import { AppConfig, type ThemePackName } from '../config';
+import {
+    AppConfig,
+    type SceneThemeDefinition,
+    type ThemePackName,
+    type TerrainLodProfile,
+    type TerrainLodProfileName
+} from '../config';
 import { ThemeManager } from '../themes/ThemeManager';
 import type { TacticalMaterialOptions } from '../themes/tacticalMaterial';
 import { DataManager } from '../data';
 import { HudManager, type HudMode, type HudMetrics } from '../ui/HudManager';
+import { TacticalOverlayManager } from './TacticalOverlayManager';
 
 /**
  * 战术视图配置接口
  */
 import { VisualDiagnostics } from './VisualDiagnostics';
 
-// 扩展 Window 接口以包含 e3_diagnose
-declare global {
-    interface Window {
-        e3_diagnose?: () => Promise<void>;
-    }
-}
-
 export interface TacticalConfig {
     terrainUrl?: string;
     useDynamicTerrain?: boolean; // 是否请求顶点法线
     baseLayer?: boolean;        // 是否启用基础底图
     baseMapUrl?: string;
-    theme?: 'tactical' | 'satellite';
+    theme?: string;
     themePack?: ThemePackName;
     onTerrainStatusChange?: (status: 'connected' | 'failed' | 'disabled', detail?: string) => void;
+    onLodProfileChange?: (profile: TerrainLodProfileName, metersPerPixel: number) => void;
+}
+
+export interface LodSwitchStats {
+    switchCount: number;
+    lastSwitchDurationMs: number;
+    averageSwitchDurationMs: number;
+    lastSwitchAtEpochMs?: number;
+}
+
+export interface RenderPerfStats {
+    averageFps: number;
+    recentFps: number;
+    sampleSeconds: number;
 }
 
 /**
@@ -50,12 +64,16 @@ export class TacticalViewer {
     private baseLayerEnabled: boolean;
     private baseMapUrl: string;
     private tacticalStyle: TacticalMaterialOptions;
-    private currentTheme: 'tactical' | 'satellite';
+    private currentTheme: string;
     private localTerrainProvider?: CesiumTerrainProvider;
+    private localTerrainLoading: boolean;
+    private localTerrainBlockedByOom: boolean;
+    private terrainUrl?: string;
+    private terrainRequestVertexNormals: boolean;
     private ellipsoidTerrainProvider: EllipsoidTerrainProvider;
-    private usingFallbackTerrain: boolean;
     private removeCameraChangedListener?: () => void;
     private onTerrainStatusChange?: (status: 'connected' | 'failed' | 'disabled', detail?: string) => void;
+    private onLodProfileChange?: (profile: TerrainLodProfileName, metersPerPixel: number) => void;
     private dataManager: DataManager;
     private hudManager: HudManager;
     private mouseMoveHandler?: ScreenSpaceEventHandler;
@@ -63,6 +81,26 @@ export class TacticalViewer {
     private hudQueryToken: number;
     private maxZoomOutHeight: number;
     private onWindowResize?: () => void;
+    private diagnostics: VisualDiagnostics;
+    private overlayManager: TacticalOverlayManager;
+    private currentLodProfile: TerrainLodProfileName;
+    private currentLodConfig: TerrainLodProfile;
+    private currentMetersPerPixel: number;
+    private lodSwitchTimer?: ReturnType<typeof setTimeout>;
+    private lodSwitchCount: number;
+    private totalLodSwitchDurationMs: number;
+    private lastLodSwitchDurationMs: number;
+    private lastLodSwitchAtEpochMs?: number;
+    private perfStartTimeMs: number;
+    private perfFrameCount: number;
+    private perfRecentWindowStartMs: number;
+    private perfRecentFrameCount: number;
+    private perfRecentFps: number;
+    private readonly onPostRender: () => void;
+    private tacticalReliefFocusApplied: boolean;
+    private readonly stableGlobalBaselineMode: boolean;
+    private readonly globalMaterialExperimentEnabled: boolean;
+    private readonly adaptiveLodMaxProfile: TerrainLodProfileName;
 
     constructor(containerId: string, config: TacticalConfig = {}) {
         // 合并配置与默认值
@@ -77,10 +115,41 @@ export class TacticalViewer {
         this.currentTheme = theme;
         this.tacticalStyle = AppConfig.ui.themePacks[themePack].tacticalStyle;
         this.ellipsoidTerrainProvider = new EllipsoidTerrainProvider();
-        this.usingFallbackTerrain = false;
         this.onTerrainStatusChange = config.onTerrainStatusChange;
+        this.onLodProfileChange = config.onLodProfileChange;
+        this.localTerrainLoading = false;
+        this.localTerrainBlockedByOom = false;
+        this.terrainUrl = terrainUrl;
+        this.terrainRequestVertexNormals = useDynamicTerrain;
         this.hudQueryToken = 0;
         this.maxZoomOutHeight = Number.POSITIVE_INFINITY;
+        // 初始化先用 global，避免在高空短暂误用本地 terrain 导致内存峰值。
+        this.currentLodProfile = 'global';
+        this.currentLodConfig = AppConfig.terrain.lodProfiles[this.currentLodProfile];
+        this.currentMetersPerPixel = Number.NaN;
+        this.lodSwitchCount = 0;
+        this.totalLodSwitchDurationMs = 0;
+        this.lastLodSwitchDurationMs = 0;
+        this.perfStartTimeMs = performance.now();
+        this.perfFrameCount = 0;
+        this.perfRecentWindowStartMs = this.perfStartTimeMs;
+        this.perfRecentFrameCount = 0;
+        this.perfRecentFps = 0;
+        this.tacticalReliefFocusApplied = false;
+        this.onPostRender = () => {
+            const now = performance.now();
+            this.perfFrameCount += 1;
+            this.perfRecentFrameCount += 1;
+            const windowMs = now - this.perfRecentWindowStartMs;
+            if (windowMs >= 1000) {
+                this.perfRecentFps = (this.perfRecentFrameCount * 1000) / windowMs;
+                this.perfRecentFrameCount = 0;
+                this.perfRecentWindowStartMs = now;
+            }
+        };
+        this.stableGlobalBaselineMode = AppConfig.terrain.operationMode === 'stableGlobalBaseline';
+        this.globalMaterialExperimentEnabled = AppConfig.terrain.experiment.enableGlobalMaterialAttempt;
+        this.adaptiveLodMaxProfile = AppConfig.terrain.experiment.adaptiveLodMaxProfile;
 
         // 1. 初始化 Viewer (离线优先)
         console.log(`TacticalViewer: Initializing Viewer on container: ${containerId}`);
@@ -116,20 +185,16 @@ export class TacticalViewer {
         this.viewer.scene.backgroundColor = Color.DARKBLUE;
         this.viewer.scene.globe.baseColor = Color.DARKGRAY;
         this.viewer.scene.globe.show = true;
+        this.viewer.scene.postRender.addEventListener(this.onPostRender);
 
         // Force initial view: full globe with geocenter near screen center
-        this.viewer.camera.setView({
-            destination: Cartesian3.fromDegrees(0.0, 0.0, 26000000.0),
-            orientation: {
-                heading: CesiumMath.toRadians(0.0),
-                pitch: CesiumMath.toRadians(-90.0),
-                roll: 0.0
-            }
-        });
+        this.applyInitialView();
 
         this.themeManager = new ThemeManager(this.viewer);
         this.dataManager = new DataManager(this.viewer);
-        this.dataManager.setQueryLevel(9);
+        this.dataManager.setQueryLevel(this.currentLodConfig.queryLevel);
+        this.diagnostics = new VisualDiagnostics(this.viewer);
+        this.overlayManager = new TacticalOverlayManager(this.viewer);
         const hudContainer = this.viewer.container as HTMLElement;
         this.hudManager = new HudManager(hudContainer, 'docked');
         this.initPromise = this.initialize(terrainUrl, useDynamicTerrain, theme);
@@ -138,12 +203,33 @@ export class TacticalViewer {
     /**
      * 切换渲染主题
      */
-    public applyTheme(name: 'tactical' | 'satellite'): void {
+    public applyTheme(name: string): void {
         this.currentTheme = name;
-        this.themeManager.applyTheme(name, {
-            baseLayerEnabled: this.baseLayerEnabled,
-            baseMapUrl: this.baseMapUrl,
-            tacticalStyle: this.tacticalStyle
+        const sceneTheme = this.resolveSceneTheme(name);
+        const forceImageryInContinental =
+            this.currentLodProfile === 'continental' && AppConfig.terrain.debug.showImageryInContinental;
+        const cameraHeight = this.viewer.camera.positionCartographic.height;
+        const forceEllipsoidByHeight =
+            AppConfig.terrain.enableGlobalFallback &&
+            Number.isFinite(cameraHeight) &&
+            cameraHeight >= AppConfig.terrain.fallbackSwitchHeight;
+        const terrainDegradedForCurrentProfile =
+            this.currentLodConfig.useLocalTerrain &&
+            (this.localTerrainBlockedByOom || !this.localTerrainProvider || forceEllipsoidByHeight);
+        const forceFallbackImagery = terrainDegradedForCurrentProfile;
+        const baseLayerEnabled =
+            this.currentLodConfig.enableImagery || forceImageryInContinental || forceFallbackImagery;
+        const materialPreset = forceFallbackImagery ? 'off' : this.currentLodConfig.materialPreset;
+        if (forceFallbackImagery) {
+            console.warn(
+                `TacticalViewer: Fallback imagery enabled because terrain is unavailable for profile=${this.currentLodProfile}.`
+            );
+        }
+        this.themeManager.applyTheme(sceneTheme.renderMode, {
+            baseLayerEnabled,
+            baseMapUrl: sceneTheme.baseMapUrl ?? this.baseMapUrl,
+            tacticalStyle: this.resolveTacticalStyleByLod(this.currentLodConfig),
+            tacticalMaterialPreset: materialPreset
         });
     }
 
@@ -152,8 +238,9 @@ export class TacticalViewer {
      */
     public applyThemePack(name: ThemePackName): void {
         this.tacticalStyle = AppConfig.ui.themePacks[name].tacticalStyle;
-        if (this.currentTheme === 'tactical') {
-            this.applyTheme('tactical');
+        const sceneTheme = this.resolveSceneTheme(this.currentTheme);
+        if (sceneTheme.renderMode === 'tactical') {
+            this.applyTheme(this.currentTheme);
         }
     }
 
@@ -171,6 +258,93 @@ export class TacticalViewer {
         return this.initPromise;
     }
 
+    public getCurrentLodProfile(): TerrainLodProfileName {
+        return this.currentLodProfile;
+    }
+
+    public getCurrentMetersPerPixel(): number {
+        return this.currentMetersPerPixel;
+    }
+
+    public getLodSwitchStats(): LodSwitchStats {
+        return {
+            switchCount: this.lodSwitchCount,
+            lastSwitchDurationMs: this.lastLodSwitchDurationMs,
+            averageSwitchDurationMs: this.lodSwitchCount > 0
+                ? this.totalLodSwitchDurationMs / this.lodSwitchCount
+                : 0,
+            lastSwitchAtEpochMs: this.lastLodSwitchAtEpochMs
+        };
+    }
+
+    public getRenderPerfStats(): RenderPerfStats {
+        const now = performance.now();
+        const elapsedMs = Math.max(1, now - this.perfStartTimeMs);
+        const averageFps = (this.perfFrameCount * 1000) / elapsedMs;
+        return {
+            averageFps,
+            recentFps: this.perfRecentFps,
+            sampleSeconds: elapsedMs / 1000
+        };
+    }
+
+    public getRuntimeRenderMode(): string {
+        if (this.localTerrainBlockedByOom) {
+            return 'SAFE_GLOBAL_FALLBACK_WASM_OOM';
+        }
+        if (!this.stableGlobalBaselineMode) {
+            return 'ADAPTIVE_LOD';
+        }
+        if (!this.globalMaterialExperimentEnabled) {
+            return 'STABLE_GLOBAL_IMAGERY_BASELINE';
+        }
+        if (this.currentLodProfile !== 'global') {
+            return 'STABLE_GLOBAL_LOCK_PENDING';
+        }
+        const usingLocalTerrain = !!this.localTerrainProvider && this.viewer.terrainProvider === this.localTerrainProvider;
+        if (usingLocalTerrain) {
+            return 'STABLE_GLOBAL_MATERIAL_EXPERIMENT';
+        }
+        if (this.localTerrainLoading) {
+            return 'STABLE_GLOBAL_MATERIAL_LOADING_FALLBACK';
+        }
+        return 'STABLE_GLOBAL_IMAGERY_FALLBACK';
+    }
+
+    public activateSafeMode(reason: string = 'manual'): void {
+        if (reason === 'wasm-oom') {
+            this.applyInitialView();
+        }
+        const mpp = this.estimateCenterMetersPerPixel();
+        this.currentMetersPerPixel = mpp;
+        this.applyLodProfile('global', mpp, true);
+        console.warn(`TacticalViewer: Safe mode activated (${reason}).`);
+    }
+
+    /**
+     * 运行视觉诊断流程。
+     */
+    public runDiagnostics(): Promise<void> {
+        return this.diagnostics
+            .runAutoPilot(this.localTerrainProvider ?? this.viewer.terrainProvider)
+            .finally(() => {
+                this.reconcileLodProfileNow();
+            });
+    }
+
+    public handleWasmOutOfMemory(): void {
+        if (this.localTerrainBlockedByOom) {
+            return;
+        }
+        this.localTerrainBlockedByOom = true;
+        this.localTerrainLoading = false;
+        this.localTerrainProvider = undefined;
+        this.terrainUrl = undefined;
+        this.activateSafeMode('wasm-oom');
+        this.onTerrainStatusChange?.('failed', 'WASM_OOM_LOCAL_TERRAIN_DISABLED');
+        console.error('TacticalViewer: Local terrain disabled for this session due to WASM OOM.');
+    }
+
     /**
      * 释放资源，避免重复创建 Viewer 导致显存泄漏
      */
@@ -183,6 +357,10 @@ export class TacticalViewer {
             clearTimeout(this.hudDebounceTimer);
             this.hudDebounceTimer = undefined;
         }
+        if (this.lodSwitchTimer) {
+            clearTimeout(this.lodSwitchTimer);
+            this.lodSwitchTimer = undefined;
+        }
         if (this.mouseMoveHandler) {
             this.mouseMoveHandler.destroy();
             this.mouseMoveHandler = undefined;
@@ -192,45 +370,59 @@ export class TacticalViewer {
             this.onWindowResize = undefined;
         }
         this.hudManager.destroy();
+        this.overlayManager.destroy();
+        this.viewer.scene.postRender.removeEventListener(this.onPostRender);
         if (!this.viewer.isDestroyed()) {
             this.viewer.destroy();
         }
-        delete window.e3_diagnose;
     }
 
     private async initialize(
-        terrainUrl: string | undefined,
-        useDynamicTerrain: boolean,
-        theme: 'tactical' | 'satellite'
+        _terrainUrl: string | undefined,
+        _useDynamicTerrain: boolean,
+        theme: string
     ): Promise<void> {
-        // 2. 配置地形（等待完成，避免初始化竞态）
-        if (terrainUrl) {
-            await this.configureTerrain(terrainUrl, useDynamicTerrain);
-        } else {
-            this.onTerrainStatusChange?.('disabled', 'Terrain URL is empty.');
-        }
-
-        // 3. 配置底图
+        // 2. 配置底图
         this.configureBaseLayer(this.baseLayerEnabled);
 
-        // 4. 应用初始主题
+        // 3. 应用初始主题
+        this.currentMetersPerPixel = this.estimateCenterMetersPerPixel();
+        // 初始化阶段直接按绝对阈值定档，避免因过渡态和冷却策略卡在中间档位。
+        this.currentLodProfile = this.classifyLodProfile(this.currentMetersPerPixel);
+        this.applyLodProfile(this.currentLodProfile, this.currentMetersPerPixel, false);
         this.applyTheme(theme);
         this.setupZoomOutLimit();
-        this.setupGlobalTerrainFallback();
+        this.setupLodProfileSwitching();
         this.setupHudTracking();
+        if (AppConfig.tacticalOverlay.enabled && AppConfig.tacticalOverlay.scenario === 'redFlagDemo') {
+            this.overlayManager.applyRedFlagScenario();
+        }
 
-        // 初始化视觉诊断模块
-        const diagnostics = new VisualDiagnostics(this.viewer);
-        window.e3_diagnose = () => diagnostics.runAutoPilot();
-        console.log("TacticalViewer: VisualDiagnostics initialized. Run 'window.e3_diagnose()' to test.");
+        if (!this.terrainUrl) {
+            this.onTerrainStatusChange?.('disabled', 'Terrain URL is empty.');
+        } else if (this.stableGlobalBaselineMode && !this.globalMaterialExperimentEnabled) {
+            // 稳定基线模式下，渲染仍使用椭球地形，但后台预加载本地 terrain 供高程查询使用。
+            // 这样可恢复 HUD/点位查询的真实高程，同时不改变默认渲染策略。
+            void this.configureTerrain(this.terrainUrl, this.terrainRequestVertexNormals);
+        }
 
-        // 5. 设置视角：默认全球全貌，地心位于屏幕中心
+        // 初始化视觉诊断模块（通过实例方法 runDiagnostics 调用）
+        console.log("TacticalViewer: VisualDiagnostics initialized. Use viewer.runDiagnostics() to test.");
+
+        // 视角已在构造阶段初始化，避免在此覆盖 forceProfile/tactical 自动聚焦结果。
+    }
+
+    private applyInitialView(): void {
         this.viewer.camera.setView({
-            destination: Cartesian3.fromDegrees(0.0, 0.0, 26000000.0),
+            destination: Cartesian3.fromDegrees(
+                AppConfig.camera.longitude,
+                AppConfig.camera.latitude,
+                AppConfig.camera.height
+            ),
             orientation: {
-                heading: CesiumMath.toRadians(0.0),
-                pitch: CesiumMath.toRadians(-90.0),
-                roll: 0.0
+                heading: CesiumMath.toRadians(AppConfig.camera.heading),
+                pitch: CesiumMath.toRadians(AppConfig.camera.pitch),
+                roll: AppConfig.camera.roll
             }
         });
     }
@@ -299,6 +491,12 @@ export class TacticalViewer {
         return (2 * height * Math.tan(fovy / 2)) / viewportHeight;
     }
 
+    private estimateCenterMetersPerPixel(): number {
+        const canvas = this.viewer.scene.canvas;
+        const center = new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
+        return this.estimateMetersPerPixel(center);
+    }
+
     private pickCartesianOnGlobe(screenPosition: Cartesian2): Cartesian3 | undefined {
         const ellipsoid = Ellipsoid.WGS84;
         const ellipsoidHit = this.viewer.camera.pickEllipsoid(screenPosition, ellipsoid);
@@ -331,6 +529,10 @@ export class TacticalViewer {
      * 配置地形服务
      */
     private async configureTerrain(url: string, requestVertexNormals: boolean): Promise<void> {
+        if (this.localTerrainLoading || this.localTerrainProvider || this.localTerrainBlockedByOom) {
+            return;
+        }
+        this.localTerrainLoading = true;
         console.log(`TacticalViewer: Configuring terrain from URL: ${url}`);
         try {
             const provider = await CesiumTerrainProvider.fromUrl(url, {
@@ -338,41 +540,313 @@ export class TacticalViewer {
             });
             console.log("TacticalViewer: CesiumTerrainProvider.fromUrl returned successfully.");
             this.localTerrainProvider = provider;
-            this.viewer.terrainProvider = provider;
             this.dataManager.setPreferredTerrainProvider(provider);
-            console.log("TacticalViewer: Terrain provider set on viewer.");
+            console.log("TacticalViewer: Terrain provider ready.");
             this.onTerrainStatusChange?.('connected', url);
+            this.applyTerrainProviderByLod(this.currentLodConfig);
+            // 关键：地形异步就绪后需要重新套用主题，清除“terrain unavailable”回退贴图。
+            this.applyTheme(this.currentTheme);
         } catch (error) {
             console.error("TacticalViewer: FAILED to load terrain service:", error);
             const detail = error instanceof Error ? error.message : String(error);
             this.onTerrainStatusChange?.('failed', detail);
+            this.applyTerrainProviderByLod(this.currentLodConfig);
+            this.applyTheme(this.currentTheme);
+        } finally {
+            this.localTerrainLoading = false;
         }
     }
 
-    private setupGlobalTerrainFallback(): void {
-        if (!AppConfig.terrain.enableGlobalFallback) {
+    private setupLodProfileSwitching(): void {
+        if (this.stableGlobalBaselineMode) {
+            this.currentMetersPerPixel = this.estimateCenterMetersPerPixel();
+            this.applyLodProfile('global', this.currentMetersPerPixel, true);
+            console.warn('TacticalViewer: LOD auto-switch disabled (operationMode=stableGlobalBaseline).');
             return;
         }
-        const threshold = AppConfig.terrain.fallbackSwitchHeight;
+        const forcedProfile = AppConfig.terrain.debug.forceProfile;
+        if (forcedProfile) {
+            this.currentMetersPerPixel = this.estimateCenterMetersPerPixel();
+            this.applyLodProfile(forcedProfile, this.currentMetersPerPixel, true);
+            console.warn(`TacticalViewer: LOD auto-switch disabled, forceProfile=${forcedProfile}.`);
+            return;
+        }
+        const debounceMs = AppConfig.terrain.modeSwitch.debounceMs;
+        const cooldownMs = AppConfig.terrain.modeSwitch.cooldownMs;
         const onCameraChanged = () => {
-            if (!this.localTerrainProvider) return;
-            const h = this.viewer.camera.positionCartographic.height;
-            const shouldFallback = h >= threshold;
-            if (shouldFallback && !this.usingFallbackTerrain) {
-                this.viewer.terrainProvider = this.ellipsoidTerrainProvider;
-                this.usingFallbackTerrain = true;
-                console.log(`TacticalViewer: Global terrain fallback enabled at height ${h.toFixed(0)}m.`);
-            } else if (!shouldFallback && this.usingFallbackTerrain) {
-                this.viewer.terrainProvider = this.localTerrainProvider;
-                this.usingFallbackTerrain = false;
-                console.log(`TacticalViewer: Restored local terrain at height ${h.toFixed(0)}m.`);
+            this.enforceCameraSafetyBounds();
+            if (this.lodSwitchTimer) {
+                clearTimeout(this.lodSwitchTimer);
             }
+            this.lodSwitchTimer = setTimeout(() => {
+                const mpp = this.estimateCenterMetersPerPixel();
+                const nextProfile = this.evaluateLodProfile(mpp, this.currentLodProfile);
+                this.currentMetersPerPixel = mpp;
+                if (nextProfile !== this.currentLodProfile) {
+                    const now = Date.now();
+                    if (this.lastLodSwitchAtEpochMs && now - this.lastLodSwitchAtEpochMs < cooldownMs) {
+                        const waitMs = cooldownMs - (now - this.lastLodSwitchAtEpochMs);
+                        this.scheduleLodReconcile(waitMs);
+                        this.onLodProfileChange?.(this.currentLodProfile, mpp);
+                        return;
+                    }
+                    this.applyLodProfile(nextProfile, mpp, true);
+                } else {
+                    this.onLodProfileChange?.(this.currentLodProfile, mpp);
+                }
+            }, debounceMs);
         };
         this.viewer.camera.changed.addEventListener(onCameraChanged);
         this.removeCameraChangedListener = () => {
             this.viewer.camera.changed.removeEventListener(onCameraChanged);
         };
         onCameraChanged();
+    }
+
+    private scheduleLodReconcile(waitMs: number): void {
+        if (this.lodSwitchTimer) {
+            clearTimeout(this.lodSwitchTimer);
+        }
+        this.lodSwitchTimer = setTimeout(() => {
+            this.enforceCameraSafetyBounds();
+            const mpp = this.estimateCenterMetersPerPixel();
+            this.currentMetersPerPixel = mpp;
+            const target = this.classifyLodProfile(mpp);
+            if (target !== this.currentLodProfile) {
+                this.applyLodProfile(target, mpp, true);
+            } else {
+                this.onLodProfileChange?.(this.currentLodProfile, mpp);
+            }
+        }, Math.max(16, waitMs));
+    }
+
+    private reconcileLodProfileNow(): void {
+        if (this.stableGlobalBaselineMode) {
+            this.currentMetersPerPixel = this.estimateCenterMetersPerPixel();
+            if (this.currentLodProfile !== 'global') {
+                this.applyLodProfile('global', this.currentMetersPerPixel, true);
+                return;
+            }
+            this.onLodProfileChange?.(this.currentLodProfile, this.currentMetersPerPixel);
+            return;
+        }
+        const forcedProfile = AppConfig.terrain.debug.forceProfile;
+        if (forcedProfile) {
+            this.currentMetersPerPixel = this.estimateCenterMetersPerPixel();
+            if (forcedProfile !== this.currentLodProfile) {
+                this.applyLodProfile(forcedProfile, this.currentMetersPerPixel, true);
+                return;
+            }
+            this.onLodProfileChange?.(this.currentLodProfile, this.currentMetersPerPixel);
+            return;
+        }
+        const mpp = this.estimateCenterMetersPerPixel();
+        this.currentMetersPerPixel = mpp;
+        const target = this.classifyLodProfile(mpp);
+        if (target !== this.currentLodProfile) {
+            this.applyLodProfile(target, mpp, true);
+            return;
+        }
+        this.onLodProfileChange?.(this.currentLodProfile, mpp);
+    }
+
+    private applyLodProfile(profile: TerrainLodProfileName, metersPerPixel: number, emitLog: boolean): void {
+        if (this.localTerrainBlockedByOom && profile !== 'global') {
+            profile = 'global';
+        }
+        profile = this.clampProfileToAdaptiveCap(profile);
+        const begin = performance.now();
+        this.currentLodProfile = profile;
+        this.currentLodConfig = AppConfig.terrain.lodProfiles[profile];
+        this.enforceCameraSafetyBounds();
+        this.applyTerrainProviderByLod(this.currentLodConfig);
+        this.applyTacticalVisualizationHints(profile);
+        this.dataManager.setQueryLevel(this.currentLodConfig.queryLevel);
+        this.ensureTacticalObliqueView(profile);
+        this.applyTheme(this.currentTheme);
+        if (emitLog) {
+            const durationMs = performance.now() - begin;
+            this.lodSwitchCount += 1;
+            this.totalLodSwitchDurationMs += durationMs;
+            this.lastLodSwitchDurationMs = durationMs;
+            this.lastLodSwitchAtEpochMs = Date.now();
+            console.log(
+                `TacticalViewer: LOD profile switched to ${profile} (mpp=${metersPerPixel.toFixed(2)}, material=${this.currentLodConfig.materialPreset}, imagery=${this.currentLodConfig.enableImagery}, cost=${durationMs.toFixed(2)}ms).`
+            );
+        }
+        this.onLodProfileChange?.(profile, metersPerPixel);
+    }
+
+    private enforceCameraSafetyBounds(): void {
+        const camera = this.viewer.camera;
+        const pos = camera.positionCartographic;
+        if (!pos) return;
+        const minHeight = this.currentLodProfile === 'tactical' ? 900.0 : 2500.0;
+        const needsHeightClamp = Number.isFinite(pos.height) && pos.height < minHeight;
+        const needsPitchClamp = this.currentLodProfile !== 'global' && camera.pitch > CesiumMath.toRadians(-8.0);
+        if (!needsHeightClamp && !needsPitchClamp) return;
+        camera.setView({
+            destination: Cartesian3.fromRadians(
+                pos.longitude,
+                pos.latitude,
+                needsHeightClamp ? minHeight : pos.height
+            ),
+            orientation: {
+                heading: camera.heading,
+                pitch: needsPitchClamp ? CesiumMath.toRadians(-18.0) : camera.pitch,
+                roll: 0.0
+            }
+        });
+    }
+
+    private applyTacticalVisualizationHints(profile: TerrainLodProfileName): void {
+        // tactical 档位下提高地形可读性，避免近地贴视角时“看起来一片平”。
+        if (profile === 'tactical') {
+            this.viewer.scene.verticalExaggeration = 3.6;
+            // 允许近地低空观察起伏，但保留最小安全距离避免穿地。
+            this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 800.0;
+            return;
+        }
+        this.viewer.scene.verticalExaggeration = 1.0;
+        this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
+    }
+
+    private ensureTacticalObliqueView(profile: TerrainLodProfileName): void {
+        if (profile !== 'tactical') return;
+        const camera = this.viewer.camera;
+        const focus = AppConfig.terrain.debug.tacticalReliefFocus;
+        if (focus.enabled && !this.tacticalReliefFocusApplied) {
+            this.tacticalReliefFocusApplied = true;
+            camera.setView({
+                destination: Cartesian3.fromDegrees(
+                    focus.longitude,
+                    focus.latitude,
+                    focus.height
+                ),
+                orientation: {
+                    heading: CesiumMath.toRadians(focus.heading),
+                    pitch: CesiumMath.toRadians(focus.pitch),
+                    roll: 0.0
+                }
+            });
+            return;
+        }
+        const pitch = camera.pitch;
+        // 当用户几乎俯视地面时，地形起伏会被视觉压扁；进入 tactical 时自动拉到斜视角。
+        if (!Number.isFinite(pitch) || pitch > -1.25) return;
+        const pos = camera.positionCartographic;
+        const destination = Cartesian3.fromRadians(
+            pos.longitude,
+            pos.latitude,
+            Math.max(3500.0, pos.height * 1.02)
+        );
+        camera.setView({
+            destination,
+            orientation: {
+                heading: camera.heading + CesiumMath.toRadians(8.0),
+                pitch: CesiumMath.toRadians(-34.0),
+                roll: 0.0
+            }
+        });
+    }
+
+    private applyTerrainProviderByLod(profile: TerrainLodProfile): void {
+        const wantsLocalTerrain = profile.useLocalTerrain && !this.localTerrainBlockedByOom;
+        if (wantsLocalTerrain && !this.localTerrainProvider && !this.localTerrainLoading && this.terrainUrl) {
+            void this.configureTerrain(this.terrainUrl, this.terrainRequestVertexNormals);
+        }
+        const highAltitudeFallbackEnabled = AppConfig.terrain.enableGlobalFallback;
+        const fallbackSwitchHeight = AppConfig.terrain.fallbackSwitchHeight;
+        const cameraHeight = this.viewer.camera.positionCartographic.height;
+        const forceEllipsoidByHeight =
+            highAltitudeFallbackEnabled &&
+            !this.stableGlobalBaselineMode &&
+            Number.isFinite(cameraHeight) &&
+            cameraHeight >= fallbackSwitchHeight;
+        const useLocalTerrain = wantsLocalTerrain && !!this.localTerrainProvider && !forceEllipsoidByHeight;
+        this.viewer.terrainProvider = useLocalTerrain
+            ? this.localTerrainProvider as CesiumTerrainProvider
+            : this.ellipsoidTerrainProvider;
+    }
+
+    private resolveTacticalStyleByLod(profile: TerrainLodProfile): TacticalMaterialOptions {
+        return {
+            ...this.tacticalStyle,
+            ...(profile.tacticalStyleOverrides ?? {})
+        };
+    }
+
+    private evaluateLodProfile(
+        mpp: number,
+        current: TerrainLodProfileName
+    ): TerrainLodProfileName {
+        if (this.stableGlobalBaselineMode) {
+            return 'global';
+        }
+        if (this.localTerrainBlockedByOom) {
+            return 'global';
+        }
+        const forcedProfile = AppConfig.terrain.debug.forceProfile;
+        if (forcedProfile) return forcedProfile;
+        const { global, continental, regional } = AppConfig.terrain.mppThresholds;
+        const h = AppConfig.terrain.modeSwitch.hysteresisRatio;
+        const enterGlobal = global * (1 + h);
+        const leaveGlobal = global * (1 - h);
+        const enterContinentalFromRegional = continental * (1 + h);
+        const leaveContinentalToRegional = continental * (1 - h);
+        const enterRegionalFromTactical = regional * (1 + h);
+        const leaveRegionalToTactical = regional * (1 - h);
+
+        if (current === 'global') {
+            return this.clampProfileToAdaptiveCap(mpp < leaveGlobal ? 'continental' : 'global');
+        }
+        if (current === 'continental') {
+            if (mpp > enterGlobal) return this.clampProfileToAdaptiveCap('global');
+            if (mpp < leaveContinentalToRegional) return this.clampProfileToAdaptiveCap('regional');
+            return this.clampProfileToAdaptiveCap('continental');
+        }
+        if (current === 'regional') {
+            if (mpp > enterContinentalFromRegional) return this.clampProfileToAdaptiveCap('continental');
+            if (mpp < leaveRegionalToTactical) return this.clampProfileToAdaptiveCap('tactical');
+            return this.clampProfileToAdaptiveCap('regional');
+        }
+        return this.clampProfileToAdaptiveCap(mpp > enterRegionalFromTactical ? 'regional' : 'tactical');
+    }
+
+    private classifyLodProfile(mpp: number): TerrainLodProfileName {
+        if (this.stableGlobalBaselineMode) {
+            return 'global';
+        }
+        if (this.localTerrainBlockedByOom) {
+            return 'global';
+        }
+        const forcedProfile = AppConfig.terrain.debug.forceProfile;
+        if (forcedProfile) return forcedProfile;
+        const { global, continental, regional } = AppConfig.terrain.mppThresholds;
+        if (mpp > global) return this.clampProfileToAdaptiveCap('global');
+        if (mpp > continental) return this.clampProfileToAdaptiveCap('continental');
+        if (mpp > regional) return this.clampProfileToAdaptiveCap('regional');
+        return this.clampProfileToAdaptiveCap('tactical');
+    }
+
+    private clampProfileToAdaptiveCap(profile: TerrainLodProfileName): TerrainLodProfileName {
+        if (this.stableGlobalBaselineMode) {
+            return profile;
+        }
+        const order: TerrainLodProfileName[] = ['global', 'continental', 'regional', 'tactical'];
+        const targetIndex = order.indexOf(profile);
+        const capIndex = order.indexOf(this.adaptiveLodMaxProfile);
+        if (targetIndex < 0 || capIndex < 0) {
+            return profile;
+        }
+        return targetIndex > capIndex ? order[capIndex] : profile;
+    }
+
+    private resolveSceneTheme(name: string): SceneThemeDefinition {
+        const registry = AppConfig.ui.sceneThemes as Record<string, SceneThemeDefinition>;
+        const registered = registry[name];
+        if (registered) return registered;
+        return registry[AppConfig.ui.theme];
     }
 
     private setupZoomOutLimit(): void {

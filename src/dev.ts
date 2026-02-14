@@ -1,6 +1,6 @@
 import './themes/index.css';
 import * as Cesium from 'cesium';
-import { TacticalViewer } from './core/TacticalViewer';
+import { TacticalViewer, type LodSwitchStats, type RenderPerfStats } from './core/TacticalViewer';
 import { AppConfig, type ThemePackName, type LanguageCode } from './config';
 import type { HudMode } from './ui/HudManager';
 import { UiThemeManager } from './themes/UiThemeManager';
@@ -9,6 +9,12 @@ import { i18n } from './i18n';
 declare global {
     interface Window {
         viewer: Cesium.Viewer;
+        Cesium?: typeof Cesium;
+        runDiagnostics?: () => Promise<void>;
+        getLodRuntimeStats?: () => LodSwitchStats;
+        getLodState?: () => { profile: string; metersPerPixel: number };
+        getTerrainRuntimeMode?: () => string;
+        getRenderPerfStats?: () => RenderPerfStats;
     }
 }
 
@@ -67,25 +73,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentTerrainStatus: 'connected' | 'failed' | 'disabled' = 'disabled';
     let currentTerrainDetail = '';
     let currentThemePack: ThemePackName = AppConfig.ui.themePack;
+    let currentLodProfile = 'tactical';
+    let currentMpp = 0;
+    let currentSwitchCount = 0;
+    let currentAvgSwitchCost = 0;
+    let currentRuntimeMode = 'INIT';
 
     const updateTerrainStatusText = (): void => {
         if (!terrainStatusText) return;
+        const lodText =
+            ` | ${i18n.t('app.lod')}: ${currentLodProfile.toUpperCase()}` +
+            ` | ${i18n.t('app.mpp')}: ${currentMpp.toFixed(2)}` +
+            ` | ${i18n.t('app.mode')}: ${currentRuntimeMode}` +
+            ` | ${i18n.t('app.switches')}: ${currentSwitchCount}` +
+            ` | ${i18n.t('app.switchCost')}: ${currentAvgSwitchCost.toFixed(2)}ms`;
         if (currentTerrainStatus === 'connected') {
-            terrainStatusText.innerText = i18n.t('app.terrainConnected');
+            terrainStatusText.innerText = `${i18n.t('app.terrainConnected')}${lodText}`;
             terrainStatusText.style.color = 'var(--color-accent)';
             return;
         }
         if (currentTerrainStatus === 'disabled') {
-            terrainStatusText.innerText = i18n.t('app.terrainDisabled');
+            terrainStatusText.innerText = `${i18n.t('app.terrainDisabled')}${lodText}`;
             terrainStatusText.style.color = 'var(--color-warning)';
             return;
         }
-        terrainStatusText.innerText = `${i18n.t('app.terrainFailed')} (${currentTerrainDetail || 'unknown'})`;
+        terrainStatusText.innerText = `${i18n.t('app.terrainFailed')} (${currentTerrainDetail || 'unknown'})${lodText}`;
         terrainStatusText.style.color = 'var(--color-danger)';
     };
 
     try {
         console.log("Dev: Initializing TacticalViewer...");
+        const viewerRef: { current?: TacticalViewer } = {};
+        let wasmOomHandled = false;
         const viewerInstance = new TacticalViewer('app', {
             theme: 'tactical',
             baseLayer: false,
@@ -93,12 +112,48 @@ document.addEventListener('DOMContentLoaded', async () => {
             onTerrainStatusChange: (terrainStatus, detail) => {
                 currentTerrainStatus = terrainStatus;
                 currentTerrainDetail = detail ?? '';
+                currentRuntimeMode = viewerRef.current?.getRuntimeRenderMode() ?? currentRuntimeMode;
+                updateTerrainStatusText();
+            },
+            onLodProfileChange: (profile, metersPerPixel) => {
+                currentLodProfile = profile;
+                currentMpp = metersPerPixel;
+                currentRuntimeMode = viewerRef.current?.getRuntimeRenderMode() ?? currentRuntimeMode;
+                const stats = viewerRef.current?.getLodSwitchStats();
+                if (!stats) return;
+                currentSwitchCount = stats.switchCount;
+                currentAvgSwitchCost = stats.averageSwitchDurationMs;
                 updateTerrainStatusText();
             }
         });
+        viewerRef.current = viewerInstance;
 
         await viewerInstance.ready();
         window.viewer = viewerInstance.viewer;
+        window.Cesium = Cesium;
+        const activateSafeMode = (): void => {
+            try {
+                viewerInstance.handleWasmOutOfMemory();
+            } catch (error) {
+                console.error('Dev: Failed to activate safe mode:', error);
+            }
+        };
+        window.runDiagnostics = () => viewerInstance.runDiagnostics();
+        window.getLodRuntimeStats = () => viewerInstance.getLodSwitchStats();
+        window.getLodState = () => ({
+            profile: viewerInstance.getCurrentLodProfile(),
+            metersPerPixel: viewerInstance.getCurrentMetersPerPixel()
+        });
+        window.getTerrainRuntimeMode = () => viewerInstance.getRuntimeRenderMode();
+        window.getRenderPerfStats = () => viewerInstance.getRenderPerfStats();
+        currentLodProfile = viewerInstance.getCurrentLodProfile();
+        currentMpp = viewerInstance.getCurrentMetersPerPixel();
+        currentRuntimeMode = viewerInstance.getRuntimeRenderMode();
+        {
+            const stats = viewerInstance.getLodSwitchStats();
+            currentSwitchCount = stats.switchCount;
+            currentAvgSwitchCost = stats.averageSwitchDurationMs;
+        }
         const viewer = viewerInstance.viewer;
 
         viewerInstance.setHudMode(currentHudMode);
@@ -144,7 +199,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
-        const noon = Cesium.JulianDate.fromDate(new Date('2025-06-01T12:00:00Z'));
+        // 默认设为 Nevada 区域白天（UTC 20:00 ≈ 当地中午前后），提升地形明暗可读性。
+        const noon = Cesium.JulianDate.fromDate(new Date('2025-06-01T20:00:00Z'));
         viewer.clock.currentTime = noon;
 
         setStaticTexts(currentHudMode);
@@ -179,10 +235,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 };
 
                 try {
-                    if (!window.e3_diagnose) {
+                    if (!window.runDiagnostics) {
                         throw new Error('Diagnostics interface is not available.');
                     }
-                    await window.e3_diagnose();
+                    await window.runDiagnostics();
                     if (statusText) {
                         statusText.innerText = i18n.t('app.diagnosticsPassed');
                         statusText.style.color = 'var(--color-accent)';
@@ -202,6 +258,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         console.log("Dev: TacticalViewer initialized successfully.");
+
+        window.addEventListener('error', (event) => {
+            const msg = String(event.error?.message ?? event.message ?? '');
+            if (msg.includes('WebAssembly.instantiate') && msg.includes('Out of memory')) {
+                if (!wasmOomHandled) {
+                    wasmOomHandled = true;
+                    console.error('Dev: WASM OOM detected, switching to safe mode.');
+                    activateSafeMode();
+                }
+                event.preventDefault();
+            }
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+            const reason = event.reason;
+            const msg = String(reason?.message ?? reason ?? '');
+            if (msg.includes('WebAssembly.instantiate') && msg.includes('Out of memory')) {
+                if (!wasmOomHandled) {
+                    wasmOomHandled = true;
+                    console.error('Dev: WASM OOM (promise rejection) detected, switching to safe mode.');
+                    activateSafeMode();
+                }
+                event.preventDefault();
+            }
+        });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error("Initialization failed:", err);

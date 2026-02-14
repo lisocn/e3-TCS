@@ -55,9 +55,9 @@
   --color-control-border: rgba(255, 209, 92, 0.38);
   --color-control-text: #f1e6c8;
   --color-log-text: #d7c7a6;
-  --color-hud-text: #8cffbe;
-  --color-hud-border: rgba(140, 255, 190, 0.45);
-  --color-hud-bg: rgba(10, 9, 6, 0.68);
+  --color-hud-text: #ffe2ad;
+  --color-hud-border: rgba(255, 199, 104, 0.46);
+  --color-hud-bg: rgba(24, 16, 8, 0.76);
 }
 
 /* 标准 UI 组件类 (Utility Classes) */

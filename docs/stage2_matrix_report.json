@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-02-14 19:17:28",
+  "rows": [
+    {
+      "profile": "continental",
+      "benchmark_rc": 0,
+      "benchmark_switch_count": "Switch Count: 2",
+      "benchmark_switch_seq": "Switch Sequence: ['continental', 'global']",
+      "benchmark_cap_check": true,
+      "perf_rc": 0,
+      "perf_passed": true,
+      "perf_mode": "Mode: ADAPTIVE_LOD",
+      "perf_state": "LOD State: {'profile': 'continental', 'metersPerPixel': 125.76652471249686}",
+      "perf_summary": "Perf: {'averageFps': 20.03745950323848, 'recentFps': 22.347454333398172, 'sampleSeconds': 47.41120000000298}"
+    },
+    {
+      "profile": "regional",
+      "benchmark_rc": 0,
+      "benchmark_switch_count": "Switch Count: 4",
+      "benchmark_switch_seq": "Switch Sequence: ['continental', 'regional', 'continental', 'global']",
+      "benchmark_cap_check": true,
+      "perf_rc": 0,
+      "perf_passed": true,
+      "perf_mode": "Mode: ADAPTIVE_LOD",
+      "perf_state": "LOD State: {'profile': 'regional', 'metersPerPixel': 125.76652471260951}",
+      "perf_summary": "Perf: {'averageFps': 16.35493803061325, 'recentFps': 17.124916753974002, 'sampleSeconds': 47.38629999999702}"
+    },
+    {
+      "profile": "tactical",
+      "benchmark_rc": 0,
+      "benchmark_switch_count": "Switch Count: 6",
+      "benchmark_switch_seq": "Switch Sequence: ['continental', 'regional', 'tactical', 'regional', 'continental', 'global']",
+      "benchmark_cap_check": true,
+      "perf_rc": 0,
+      "perf_passed": true,
+      "perf_mode": "Mode: ADAPTIVE_LOD",
+      "perf_state": "LOD State: {'profile': 'tactical', 'metersPerPixel': 125.76652471260951}",
+      "perf_summary": "Perf: {'averageFps': 16.336202828952196, 'recentFps': 17.84475066912543, 'sampleSeconds': 47.6855}"
+    }
+  ]
+}

@@ -4,9 +4,11 @@ import {
     Material,
     UrlTemplateImageryProvider,
     GeographicTilingScheme,
-    buildModuleUrl
+    buildModuleUrl,
+    SingleTileImageryProvider
 } from 'cesium';
 import { getTacticalMaterialFabric, type TacticalMaterialOptions } from './tacticalMaterial';
+import type { SceneThemeRenderMode, TacticalMaterialPreset } from '../config';
 
 /**
  * 默认分层设色图 (Base64)
@@ -29,15 +31,20 @@ export class ThemeManager {
      * @param name 主题名称
      */
     public applyTheme(
-        name: 'tactical' | 'satellite',
+        mode: SceneThemeRenderMode,
         options: {
             baseMapUrl?: string;
             baseLayerEnabled?: boolean;
             tacticalStyle?: TacticalMaterialOptions;
+            tacticalMaterialPreset?: TacticalMaterialPreset;
         } = {}
     ): void {
-        if (name === 'tactical') {
-            this.setTacticalTheme(options.tacticalStyle);
+        if (mode === 'tactical') {
+            this.setTacticalTheme(
+                options.tacticalStyle,
+                options.baseLayerEnabled ?? true,
+                options.tacticalMaterialPreset ?? 'high'
+            );
         } else {
             this.setSatelliteTheme(options.baseMapUrl, options.baseLayerEnabled ?? true);
         }
@@ -47,33 +54,57 @@ export class ThemeManager {
      * 设置战术模式
      * 特点：高对比度、单色底图、突出地形起伏
      */
-    private setTacticalTheme(tacticalStyle?: TacticalMaterialOptions): void {
+    private setTacticalTheme(
+        tacticalStyle?: TacticalMaterialOptions,
+        baseLayerEnabled: boolean = true,
+        materialPreset: TacticalMaterialPreset = 'high'
+    ): void {
         console.log("ThemeManager: Activating Tactical Theme (Red Flag)...");
         const { scene } = this.viewer;
-        // 先确保海陆轮廓可见：战术模式使用离线 NaturalEarthII 底图
-        // 这样可以稳定呈现大洲/海洋边界，避免“纯色球”。
-        if (tacticalStyle) {
+        if (materialPreset !== 'off' && tacticalStyle) {
             scene.globe.material = new Material({
                 fabric: getTacticalMaterialFabric(tacticalStyle)
             });
+            const debugMode = tacticalStyle.debugShading ? 'debug' : 'normal';
+            const diagnosticMode = tacticalStyle.debugMode ?? 'off';
+            console.log(`ThemeManager: Tactical material preset '${materialPreset}' enabled (${debugMode}, diagnostic=${diagnosticMode}).`);
+            console.log(`ThemeManager: globe.material attached=${scene.globe.material ? 'yes' : 'no'}.`);
         } else {
             scene.globe.material = undefined;
+            console.log("ThemeManager: Tactical material disabled for current LOD profile.");
         }
         this.viewer.imageryLayers.removeAll();
-        this.viewer.imageryLayers.addImageryProvider(new UrlTemplateImageryProvider({
-            url: `${buildModuleUrl('Assets/Textures/NaturalEarthII')}/{z}/{x}/{reverseY}.jpg`,
-            tilingScheme: new GeographicTilingScheme(),
-            minimumLevel: 0,
-            maximumLevel: 2
-        }));
-        const baseLayer = this.viewer.imageryLayers.get(0);
-        if (baseLayer) {
-            baseLayer.brightness = 0.88;
-            baseLayer.contrast = 1.22;
-            baseLayer.gamma = 0.92;
-            baseLayer.saturation = 0.35;
+        if (baseLayerEnabled) {
+            // tactical 模式允许启用离线 NaturalEarthII 底图以增强海陆轮廓辨识。
+            const baseLayer = this.viewer.imageryLayers.addImageryProvider(new UrlTemplateImageryProvider({
+                url: `${buildModuleUrl('Assets/Textures/NaturalEarthII')}/{z}/{x}/{reverseY}.jpg`,
+                tilingScheme: new GeographicTilingScheme(),
+                minimumLevel: 0,
+                maximumLevel: 2
+            }));
+            if (baseLayer) {
+                baseLayer.brightness = 0.88;
+                baseLayer.contrast = 1.22;
+                baseLayer.gamma = 0.92;
+                baseLayer.saturation = 0.35;
+            }
+            console.log("ThemeManager: NaturalEarthII tactical base layer applied.");
+        } else {
+            if (tacticalStyle?.debugShading) {
+                // 诊断覆层：程序生成经纬网，非地图语义，仅用于确认渲染通道和档位切换。
+                this.addDebugOverlayImagery();
+                console.log("ThemeManager: Tactical debug overlay imagery applied.");
+            } else {
+                console.log("ThemeManager: Tactical theme running without any imagery fallback.");
+            }
         }
-        console.log("ThemeManager: NaturalEarthII tactical base layer applied.");
+        console.log(`ThemeManager: imagery layer count = ${this.viewer.imageryLayers.length}.`);
+        for (let i = 0; i < this.viewer.imageryLayers.length; i += 1) {
+            const layer = this.viewer.imageryLayers.get(i);
+            console.log(
+                `ThemeManager: layer[${i}] show=${layer.show} alpha=${layer.alpha.toFixed(2)}`
+            );
+        }
 
         // 不需要再手动设置 uniforms，因为 Fabric 定义里已经包含了初始值
         // 如果需要动态修改，可以保留引用:
@@ -81,10 +112,11 @@ export class ThemeManager {
         // material.uniforms.color = ...
 
         scene.globe.depthTestAgainstTerrain = false;
-        scene.globe.enableLighting = false; // 关闭光照，使用 Shader 自发光
+        scene.globe.enableLighting = true; // 开启光照，增强山体与峡谷体积感
 
-        // Camouflage: Set base color to match terrain "Tan" color to hide skirts/cracks
-        scene.globe.baseColor = Color.fromCssColorString('#132033');
+        // 当本地 terrain 覆盖不完整时，会回退到 baseColor；使用主题低海拔色避免整球发黑。
+        const fallbackBaseColor = tacticalStyle?.colorLow ?? '#1a1f24';
+        scene.globe.baseColor = Color.fromCssColorString(fallbackBaseColor);
         scene.globe.showSkirts = true;
         scene.requestRenderMode = true;
         scene.maximumRenderTimeChange = 0.5;
@@ -119,6 +151,7 @@ export class ThemeManager {
 
         // 背景与地表分离，避免地球轮廓不可辨识
         scene.backgroundColor = Color.fromCssColorString('#0b0f19');
+        scene.requestRender();
     }
 
     /**
@@ -153,5 +186,56 @@ export class ThemeManager {
         this.viewer.imageryLayers.addImageryProvider(new UrlTemplateImageryProvider({
             url: baseMapUrl
         }));
+        scene.requestRender();
+    }
+
+    private addDebugOverlayImagery(): void {
+        const width = 1024;
+        const height = 512;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // 纬向色带：海洋-陆地过渡，快速判断贴图是否生效。
+        const gradient = ctx.createLinearGradient(0, 0, 0, height);
+        gradient.addColorStop(0.0, '#193f61');
+        gradient.addColorStop(0.48, '#2c5f7f');
+        gradient.addColorStop(0.52, '#b8ab84');
+        gradient.addColorStop(1.0, '#6e6d5d');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+
+        // 叠加经纬网：每 15° 一条细线，每 45° 一条粗线。
+        for (let lon = 0; lon <= 360; lon += 15) {
+            const x = Math.round((lon / 360) * width);
+            const major = lon % 45 === 0;
+            ctx.strokeStyle = major ? 'rgba(250,250,250,0.35)' : 'rgba(255,255,255,0.12)';
+            ctx.lineWidth = major ? 2 : 1;
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, height);
+            ctx.stroke();
+        }
+        for (let lat = -90; lat <= 90; lat += 15) {
+            const y = Math.round(((90 - lat) / 180) * height);
+            const major = lat % 45 === 0;
+            ctx.strokeStyle = major ? 'rgba(250,250,250,0.32)' : 'rgba(255,255,255,0.10)';
+            ctx.lineWidth = major ? 2 : 1;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(width, y);
+            ctx.stroke();
+        }
+
+        const layer = this.viewer.imageryLayers.addImageryProvider(new SingleTileImageryProvider({
+            url: canvas.toDataURL('image/png'),
+            tileWidth: width,
+            tileHeight: height
+        }));
+        if (layer) {
+            layer.alpha = 0.45;
+        }
     }
 }

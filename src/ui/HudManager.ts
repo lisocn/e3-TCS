@@ -16,6 +16,9 @@ export class HudManager {
     private root: HTMLDivElement;
     private mode: HudMode;
     private container: HTMLElement;
+    private lastData?: LocationInfo;
+    private lastMetrics?: HudMetrics;
+    private unsubscribeI18n?: () => void;
 
     constructor(container: HTMLElement, mode: HudMode = 'docked') {
         this.container = container;
@@ -35,10 +38,15 @@ export class HudManager {
         this.root.style.fontSize = '11px';
         this.root.style.lineHeight = '1.45';
         this.root.style.boxShadow = '0 0 14px color-mix(in srgb, var(--color-hud-text) 15%, transparent)';
-        this.root.style.backdropFilter = 'blur(3px)';
-        this.root.style.borderRadius = '4px';
+        this.root.style.backdropFilter = 'blur(var(--panel-blur))';
+        this.root.style.borderRadius = 'var(--panel-radius)';
         this.root.textContent = 'HUD READY';
         this.container.appendChild(this.root);
+        this.unsubscribeI18n = i18n.onChange(() => {
+            if (this.lastData) {
+                this.render(this.lastData, this.lastMetrics);
+            }
+        });
         this.applyModeLayout();
     }
 
@@ -48,6 +56,12 @@ export class HudManager {
     }
 
     public update(data: LocationInfo, metrics?: HudMetrics): void {
+        this.lastData = data;
+        this.lastMetrics = metrics;
+        this.render(data, metrics);
+    }
+
+    private render(data: LocationInfo, metrics?: HudMetrics): void {
         const lines = [
             i18n.t('hud.title'),
             `${i18n.t('hud.lon')}: ${data.longitude.toFixed(5)}`,
@@ -81,6 +95,8 @@ export class HudManager {
     }
 
     public destroy(): void {
+        this.unsubscribeI18n?.();
+        this.unsubscribeI18n = undefined;
         if (this.root.parentElement === this.container) {
             this.container.removeChild(this.root);
         }

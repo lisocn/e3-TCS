@@ -6,5 +6,13 @@ export default defineConfig({
     plugins: [
         cesium(),
         dts({ include: ['src'] })
-    ]
+    ],
+    build: {
+        lib: {
+            entry: 'src/index.ts',
+            name: 'TacticalCesiumSdk',
+            formats: ['es', 'umd'],
+            fileName: (format) => format === 'es' ? 'tactical-cesium-sdk.js' : 'tactical-cesium-sdk.umd.cjs'
+        }
+    }
 });

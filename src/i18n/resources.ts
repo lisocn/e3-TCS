@@ -20,6 +20,11 @@ export type I18nKey =
     | 'app.initializationError'
     | 'app.language'
     | 'app.themeStyle'
+    | 'app.lod'
+    | 'app.mode'
+    | 'app.mpp'
+    | 'app.switches'
+    | 'app.switchCost'
     | 'app.themeCommandCenter'
     | 'app.themeBattlefieldSand'
     | 'hud.title'
@@ -61,6 +66,11 @@ export const resources: Record<LanguageCode, ResourceTable> = {
         'app.initializationError': '初始化错误: {{message}}',
         'app.language': '语言',
         'app.themeStyle': '主题风格',
+        'app.lod': '档位',
+        'app.mode': '模式',
+        'app.mpp': '米每像素',
+        'app.switches': '切档次数',
+        'app.switchCost': '切档均耗时',
         'app.themeCommandCenter': '指挥中心',
         'app.themeBattlefieldSand': '沙漠战场',
         'hud.title': '[战术 HUD]',
@@ -99,6 +109,11 @@ export const resources: Record<LanguageCode, ResourceTable> = {
         'app.initializationError': 'Initialization Error: {{message}}',
         'app.language': 'Language',
         'app.themeStyle': 'Theme Style',
+        'app.lod': 'LOD',
+        'app.mode': 'Mode',
+        'app.mpp': 'Meters Per Pixel',
+        'app.switches': 'Switches',
+        'app.switchCost': 'Avg Switch Cost',
         'app.themeCommandCenter': 'Command Center',
         'app.themeBattlefieldSand': 'Battlefield Sand',
         'hud.title': '[TACTICAL HUD]',
