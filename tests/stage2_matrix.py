@@ -33,55 +33,46 @@ def parse_perf_pass(output: str) -> bool:
 
 
 def main() -> int:
-    profiles = ["continental", "regional", "tactical"]
+    case_name = "adaptive_default"
     perf_duration = os.getenv("STAGE2_PERF_DURATION_SECONDS", "45")
     min_avg_fps = os.getenv("STAGE2_MIN_AVG_FPS", "15")
     min_recent_fps = os.getenv("STAGE2_MIN_RECENT_FPS", "12")
     max_avg_switch_ms = os.getenv("STAGE2_MAX_AVG_SWITCH_COST_MS", "30")
     rows: list[dict[str, str | int | bool]] = []
 
-    for profile in profiles:
-        case_env = os.environ.copy()
-        case_env.update(
-            {
-                "TERRAIN_OPERATION_MODE": "adaptiveLod",
-                "ADAPTIVE_LOD_MAX_PROFILE": profile,
-                "ENABLE_GLOBAL_MATERIAL_ATTEMPT": "true",
-            }
-        )
+    case_env = os.environ.copy()
 
-        bench_rc, bench_out = run_cmd(
-            [PYTHON, os.path.join(ROOT, "tests", "lod_switch_benchmark.py")],
-            case_env,
-        )
-        perf_env = case_env.copy()
-        perf_env.update(
-            {
-                "PERF_DURATION_SECONDS": perf_duration,
-                "MIN_AVG_FPS": min_avg_fps,
-                "MIN_RECENT_FPS": min_recent_fps,
-                "MAX_AVG_SWITCH_COST_MS": max_avg_switch_ms,
-            }
-        )
-        perf_rc, perf_out = run_cmd(
-            [PYTHON, "-u", os.path.join(ROOT, "tests", "lod_perf_gate.py")],
-            perf_env,
-        )
+    bench_rc, bench_out = run_cmd(
+        [PYTHON, os.path.join(ROOT, "tests", "lod_switch_benchmark.py")],
+        case_env,
+    )
+    perf_env = case_env.copy()
+    perf_env.update(
+        {
+            "PERF_DURATION_SECONDS": perf_duration,
+            "MIN_AVG_FPS": min_avg_fps,
+            "MIN_RECENT_FPS": min_recent_fps,
+            "MAX_AVG_SWITCH_COST_MS": max_avg_switch_ms,
+        }
+    )
+    perf_rc, perf_out = run_cmd(
+        [PYTHON, "-u", os.path.join(ROOT, "tests", "lod_perf_gate.py")],
+        perf_env,
+    )
 
-        rows.append(
-            {
-                "profile": profile,
-                "benchmark_rc": bench_rc,
-                "benchmark_switch_count": extract_line(bench_out, "Switch Count:"),
-                "benchmark_switch_seq": extract_line(bench_out, "Switch Sequence:"),
-                "benchmark_cap_check": "Cap check passed" in bench_out,
-                "perf_rc": perf_rc,
-                "perf_passed": parse_perf_pass(perf_out),
-                "perf_mode": extract_line(perf_out, "Mode:"),
-                "perf_state": extract_line(perf_out, "LOD State:"),
-                "perf_summary": extract_line(perf_out, "Perf:"),
-            }
-        )
+    rows.append(
+        {
+            "profile": case_name,
+            "benchmark_rc": bench_rc,
+            "benchmark_switch_count": extract_line(bench_out, "Switch Count:"),
+            "benchmark_switch_seq": extract_line(bench_out, "Switch Sequence:"),
+            "perf_rc": perf_rc,
+            "perf_passed": parse_perf_pass(perf_out),
+            "perf_mode": extract_line(perf_out, "Mode:"),
+            "perf_state": extract_line(perf_out, "LOD State:"),
+            "perf_summary": extract_line(perf_out, "Perf:"),
+        }
+    )
 
     report_dir = os.path.join(ROOT, "docs")
     os.makedirs(report_dir, exist_ok=True)
@@ -94,27 +85,25 @@ def main() -> int:
 
     with open(report_md, "w", encoding="utf-8") as f:
         f.write(f"# Stage2 Matrix Report\n\nGenerated at: {stamp}\n\n")
-        f.write("| Profile | Benchmark | Cap Check | Perf Gate |\n")
-        f.write("|---|---:|---:|---:|\n")
+        f.write("| Profile | Benchmark | Perf Gate |\n")
+        f.write("|---|---:|---:|\n")
         for row in rows:
             bench_ok = "PASS" if row["benchmark_rc"] == 0 else "FAIL"
-            cap_ok = "PASS" if row["benchmark_cap_check"] else "FAIL"
             perf_ok = "PASS" if row["perf_rc"] == 0 and row["perf_passed"] else "FAIL"
-            f.write(f"| {row['profile']} | {bench_ok} | {cap_ok} | {perf_ok} |\n")
+            f.write(f"| {row['profile']} | {bench_ok} | {perf_ok} |\n")
         f.write("\n## Details\n\n")
         for row in rows:
             f.write(f"### {row['profile']}\n")
             f.write(f"- benchmark_rc: {row['benchmark_rc']}\n")
             f.write(f"- {row['benchmark_switch_count']}\n")
             f.write(f"- {row['benchmark_switch_seq']}\n")
-            f.write(f"- cap_check: {row['benchmark_cap_check']}\n")
             f.write(f"- perf_rc: {row['perf_rc']}\n")
             f.write(f"- perf_passed: {row['perf_passed']}\n")
             f.write(f"- {row['perf_mode']}\n")
             f.write(f"- {row['perf_state']}\n")
             f.write(f"- {row['perf_summary']}\n\n")
 
-    failed = [r for r in rows if not (r["benchmark_rc"] == 0 and r["benchmark_cap_check"] and r["perf_rc"] == 0 and r["perf_passed"])]
+    failed = [r for r in rows if not (r["benchmark_rc"] == 0 and r["perf_rc"] == 0 and r["perf_passed"])]
     print(f"Matrix report written: {report_md}")
     print(f"Matrix data written: {report_json}")
     print(f"Cases: {len(rows)}, failed: {len(failed)}")

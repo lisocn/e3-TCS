@@ -34,3 +34,7 @@ lerna-debug.log*
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Test artifacts
+tests/artifacts/*
+!tests/artifacts/.gitkeep

@@ -33,16 +33,20 @@ window.onerror = function (msg, _url, _lineNo, _columnNo, error) {
 document.addEventListener('DOMContentLoaded', async () => {
     const statusText = document.getElementById('status-text');
     const terrainStatusText = document.getElementById('terrain-status-text');
+    const topHudPanel = document.querySelector('.hud-overlay') as HTMLElement | null;
     const themeSelect = document.getElementById('theme-select') as HTMLSelectElement | null;
     const languageSelect = document.getElementById('language-select') as HTMLSelectElement | null;
     const hudModeBtn = document.getElementById('hud-mode-btn') as HTMLButtonElement | null;
+    const toggleTopHudBtn = document.getElementById('toggle-top-hud-btn') as HTMLButtonElement | null;
+    const showTopHudBtn = document.getElementById('show-top-hud-btn') as HTMLButtonElement | null;
+    const toggleBottomHudBtn = document.getElementById('toggle-bottom-hud-btn') as HTMLButtonElement | null;
     const diagBtn = document.getElementById('run-diag-btn') as HTMLButtonElement | null;
     const diagLogs = document.getElementById('diag-logs');
 
     await i18n.init(AppConfig.i18n.defaultLanguage);
     uiThemeManager.apply(AppConfig.ui.themePack);
 
-    const setStaticTexts = (hudMode: HudMode): void => {
+    const setStaticTexts = (hudMode: HudMode, topHudVisible: boolean, bottomHudVisible: boolean): void => {
         const setText = (id: string, text: string) => {
             const node = document.getElementById(id);
             if (node) node.textContent = text;
@@ -56,6 +60,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (diagBtn) {
             diagBtn.innerText = i18n.t('app.runSelfDiagnosis');
+        }
+        if (toggleTopHudBtn) {
+            toggleTopHudBtn.innerText = topHudVisible ? i18n.t('app.hideTopHud') : i18n.t('app.showTopHud');
+        }
+        if (showTopHudBtn) {
+            showTopHudBtn.innerText = i18n.t('app.showTopHud');
+        }
+        if (toggleBottomHudBtn) {
+            toggleBottomHudBtn.innerText = bottomHudVisible ? i18n.t('app.hideBottomHud') : i18n.t('app.showBottomHud');
         }
         if (themeSelect) {
             const labelByTheme: Record<ThemePackName, string> = {
@@ -78,6 +91,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentSwitchCount = 0;
     let currentAvgSwitchCost = 0;
     let currentRuntimeMode = 'INIT';
+    let topHudVisible = true;
+    let bottomHudVisible = true;
 
     const updateTerrainStatusText = (): void => {
         if (!terrainStatusText) return;
@@ -157,6 +172,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         const viewer = viewerInstance.viewer;
 
         viewerInstance.setHudMode(currentHudMode);
+        viewerInstance.setHudVisible(bottomHudVisible);
+
+        const applyTopHudVisibility = (): void => {
+            if (topHudPanel) {
+                topHudPanel.style.display = topHudVisible ? 'block' : 'none';
+            }
+            if (showTopHudBtn) {
+                showTopHudBtn.style.display = topHudVisible ? 'none' : 'inline-flex';
+            }
+            setStaticTexts(currentHudMode, topHudVisible, bottomHudVisible);
+        };
+
+        const applyBottomHudVisibility = (): void => {
+            viewerInstance.setHudVisible(bottomHudVisible);
+            setStaticTexts(currentHudMode, topHudVisible, bottomHudVisible);
+        };
 
         if (themeSelect) {
             themeSelect.value = currentThemePack;
@@ -166,7 +197,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 uiThemeManager.apply(selected);
                 viewerInstance.applyThemePack(selected);
                 updateTerrainStatusText();
-                setStaticTexts(currentHudMode);
+                setStaticTexts(currentHudMode, topHudVisible, bottomHudVisible);
                 if (statusText) {
                     statusText.innerText = i18n.t('app.systemReadyPreset', { preset: selected.toUpperCase() });
                     statusText.style.color = 'var(--color-accent)';
@@ -186,12 +217,33 @@ document.addEventListener('DOMContentLoaded', async () => {
             hudModeBtn.onclick = () => {
                 currentHudMode = currentHudMode === 'docked' ? 'follow' : 'docked';
                 viewerInstance.setHudMode(currentHudMode);
-                setStaticTexts(currentHudMode);
+                setStaticTexts(currentHudMode, topHudVisible, bottomHudVisible);
+            };
+        }
+
+        if (toggleTopHudBtn) {
+            toggleTopHudBtn.onclick = () => {
+                topHudVisible = !topHudVisible;
+                applyTopHudVisibility();
+            };
+        }
+
+        if (showTopHudBtn) {
+            showTopHudBtn.onclick = () => {
+                topHudVisible = true;
+                applyTopHudVisibility();
+            };
+        }
+
+        if (toggleBottomHudBtn) {
+            toggleBottomHudBtn.onclick = () => {
+                bottomHudVisible = !bottomHudVisible;
+                applyBottomHudVisibility();
             };
         }
 
         i18n.onChange(() => {
-            setStaticTexts(currentHudMode);
+            setStaticTexts(currentHudMode, topHudVisible, bottomHudVisible);
             updateTerrainStatusText();
             if (statusText) {
                 statusText.textContent = i18n.t('app.systemReadySdk');
@@ -199,11 +251,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
-        // 默认设为 Nevada 区域白天（UTC 20:00 ≈ 当地中午前后），提升地形明暗可读性。
-        const noon = Cesium.JulianDate.fromDate(new Date('2025-06-01T20:00:00Z'));
-        viewer.clock.currentTime = noon;
+        // 默认设为 Nevada 早晨侧光（UTC 15:30 ≈ 当地 08:30），强化山体阴影与峡谷层次。
+        const sideLightMorning = Cesium.JulianDate.fromDate(new Date('2025-06-01T15:30:00Z'));
+        viewer.clock.currentTime = sideLightMorning;
 
-        setStaticTexts(currentHudMode);
+        applyTopHudVisibility();
+        applyBottomHudVisibility();
         updateTerrainStatusText();
         if (statusText) {
             statusText.textContent = i18n.t('app.systemReadySdk');

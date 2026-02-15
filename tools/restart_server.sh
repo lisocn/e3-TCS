@@ -8,11 +8,13 @@ GIS_PROJECT_PATH="${PROJECT_ROOT}/../e3-gis"
 
 # Default Values (can be overridden by Env Vars)
 SERVER_BIN="${E3_SERVER_BIN:-${GIS_PROJECT_PATH}/build-macos-release/bin/e3_tile_server}"
-MBTILES_FILE="${E3_TERRAIN_DATA:-/Users/wangshanping/terrain/webgis/e3_terrain_zoom9.mbtiles}"
+# 默认指向最新的 octvertexnormals 数据，可通过 E3_TERRAIN_DATA 覆盖
+MBTILES_FILE="${E3_TERRAIN_DATA:-/Users/wangshanping/terrain/webgis/e3_terrain_zoom9_octvertexnormals.mbtiles}"
 PORT="${E3_SERVER_PORT:-4444}"
 LOG_FILE="${GIS_PROJECT_PATH}/e3_tiles_server.log"
 PID_FILE="${GIS_PROJECT_PATH}/server.pid"
 FRONTEND_PID_FILE="${PROJECT_ROOT}/.vite.pid"
+FRONTEND_LOG_FILE="/tmp/e3-tcs-vite.log"
 
 # Web Server Configuration
 WEB_PORT=5173
@@ -73,7 +75,8 @@ stop_by_pid_file() {
 
     local pid
     pid=$(cat "$pid_file" 2>/dev/null || true)
-    if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+    # PID 0 在 kill -0 语义下代表当前进程组，不能作为有效服务 PID。
+    if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
         echo -e "${YELLOW}[INFO] Invalid PID file ${pid_file}, removing.${NC}"
         rm -f "$pid_file"
         return 0
@@ -168,15 +171,18 @@ fi
 
 echo -e "${YELLOW}[INFO] Starting Vite...${NC}"
 cd "$PROJECT_ROOT"
-npm run dev > /dev/null 2>&1 &
+# 使用 nohup 保证脚本退出后 Vite 仍持续运行。
+nohup npm run dev -- --host 0.0.0.0 --port "$WEB_PORT" > "$FRONTEND_LOG_FILE" 2>&1 &
 echo "$!" > "$FRONTEND_PID_FILE"
 
 # Verify Web Server
 sleep 2
 if lsof -i :$WEB_PORT > /dev/null; then
     echo -e "${GREEN}[SUCCESS] Web server started. Listening on http://localhost:$WEB_PORT${NC}"
+    echo "Vite logs: $FRONTEND_LOG_FILE"
 else
     echo -e "${RED}[ERROR] Web server failed to start.${NC}"
+    echo "Check logs: $FRONTEND_LOG_FILE"
 fi
 
 echo -e "${GREEN}--- All services restarted successfully ---${NC}"

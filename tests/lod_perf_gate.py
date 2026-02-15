@@ -4,10 +4,6 @@ import time
 from playwright.sync_api import sync_playwright
 
 
-def parse_bool_env(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def parse_float_env(name: str, default: float) -> float:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -15,11 +11,20 @@ def parse_float_env(name: str, default: float) -> float:
     return float(raw)
 
 
+def ensure_screenshot_path(path: str, default_name: str) -> str:
+    resolved = path.strip() or os.path.join("tests", "artifacts", default_name)
+    screenshot_dir = os.path.dirname(resolved)
+    if screenshot_dir:
+        os.makedirs(screenshot_dir, exist_ok=True)
+    return resolved
+
+
 def run() -> int:
-    terrain_operation_mode = os.getenv("TERRAIN_OPERATION_MODE", "").strip()
-    adaptive_lod_max_profile = os.getenv("ADAPTIVE_LOD_MAX_PROFILE", "").strip()
-    force_profile = os.getenv("FORCE_PROFILE", "").strip()
-    enable_global_material_attempt = parse_bool_env("ENABLE_GLOBAL_MATERIAL_ATTEMPT")
+    app_url = os.getenv("E3_APP_URL", "http://localhost:5173").strip()
+    screenshot = ensure_screenshot_path(
+        os.getenv("PERF_GATE_SCREENSHOT", "").strip(),
+        "lod_perf_gate.png",
+    )
     min_avg_fps = parse_float_env("MIN_AVG_FPS", 15.0)
     min_recent_fps = parse_float_env("MIN_RECENT_FPS", 12.0)
     max_avg_switch_cost_ms = parse_float_env("MAX_AVG_SWITCH_COST_MS", 30.0)
@@ -33,19 +38,8 @@ def run() -> int:
         page.on("console", lambda msg: logs.append(msg.text))
         page.on("pageerror", lambda err: logs.append(f"PAGEERROR: {err}"))
 
-        page.add_init_script(
-            f"""
-            window.E3_CONFIG = Object.assign({{}}, window.E3_CONFIG || {{}}, {{
-                terrainOperationMode: {terrain_operation_mode!r},
-                adaptiveLodMaxProfile: {adaptive_lod_max_profile!r},
-                forceProfile: {force_profile!r},
-                enableGlobalMaterialAttempt: {str(enable_global_material_attempt).lower()}
-            }});
-            """
-        )
-
-        print("Navigating to http://localhost:5173 ...")
-        page.goto("http://localhost:5173", timeout=30000)
+        print(f"Navigating to {app_url} ...")
+        page.goto(app_url, timeout=30000)
         page.wait_for_selector(".cesium-viewer", timeout=30000)
         time.sleep(2.0)
 
@@ -103,8 +97,6 @@ def run() -> int:
         if unhandled_hits > 0:
             errors.append("Unhandled rejection detected")
 
-        suffix_parts = [terrain_operation_mode or "default", adaptive_lod_max_profile or "na"]
-        screenshot = f"lod_perf_gate_{'_'.join(suffix_parts)}.png"
         page.screenshot(path=screenshot)
         print(f"Screenshot: {screenshot}")
 

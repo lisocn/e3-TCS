@@ -46,8 +46,6 @@ const defaultUiTokens: Record<(typeof REQUIRED_UI_TOKEN_KEYS)[number], string> =
 };
 
 const defaultTacticalStyle: TacticalMaterialOptions = {
-    elevationMin: -200.0,
-    elevationMax: 7000.0,
     contourInterval: 220.0,
     contourThickness: 1.0,
     macroGridDensity: 14.0,
@@ -91,9 +89,6 @@ export function validateThemePackTemplate(themePack: ThemePackTemplate): string[
         if (!themePack.uiTokens[key]) {
             errors.push(`Missing ui token: ${key}`);
         }
-    }
-    if (themePack.tacticalStyle.elevationMax <= themePack.tacticalStyle.elevationMin) {
-        errors.push('Invalid tacticalStyle: elevationMax must be greater than elevationMin');
     }
     if (themePack.tacticalStyle.lodNear >= themePack.tacticalStyle.lodMid) {
         errors.push('Invalid tacticalStyle: lodNear must be less than lodMid');

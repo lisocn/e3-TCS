@@ -27,6 +27,10 @@ export type I18nKey =
     | 'app.switchCost'
     | 'app.themeCommandCenter'
     | 'app.themeBattlefieldSand'
+    | 'app.hideTopHud'
+    | 'app.showTopHud'
+    | 'app.hideBottomHud'
+    | 'app.showBottomHud'
     | 'hud.title'
     | 'hud.lon'
     | 'hud.lat'
@@ -73,6 +77,10 @@ export const resources: Record<LanguageCode, ResourceTable> = {
         'app.switchCost': '切档均耗时',
         'app.themeCommandCenter': '指挥中心',
         'app.themeBattlefieldSand': '沙漠战场',
+        'app.hideTopHud': '隐藏面板',
+        'app.showTopHud': '显示面板',
+        'app.hideBottomHud': '隐藏左下 HUD',
+        'app.showBottomHud': '显示左下 HUD',
         'hud.title': '[战术 HUD]',
         'hud.lon': '经度',
         'hud.lat': '纬度',
@@ -116,6 +124,10 @@ export const resources: Record<LanguageCode, ResourceTable> = {
         'app.switchCost': 'Avg Switch Cost',
         'app.themeCommandCenter': 'Command Center',
         'app.themeBattlefieldSand': 'Battlefield Sand',
+        'app.hideTopHud': 'Hide Panel',
+        'app.showTopHud': 'Show Panel',
+        'app.hideBottomHud': 'Hide Bottom HUD',
+        'app.showBottomHud': 'Show Bottom HUD',
         'hud.title': '[TACTICAL HUD]',
         'hud.lon': 'LON',
         'hud.lat': 'LAT',

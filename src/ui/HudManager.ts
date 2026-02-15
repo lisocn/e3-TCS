@@ -16,6 +16,7 @@ export class HudManager {
     private root: HTMLDivElement;
     private mode: HudMode;
     private container: HTMLElement;
+    private visible: boolean;
     private lastData?: LocationInfo;
     private lastMetrics?: HudMetrics;
     private unsubscribeI18n?: () => void;
@@ -23,6 +24,7 @@ export class HudManager {
     constructor(container: HTMLElement, mode: HudMode = 'docked') {
         this.container = container;
         this.mode = mode;
+        this.visible = true;
         this.root = document.createElement('div');
         this.root.style.position = 'absolute';
         this.root.style.zIndex = '120';
@@ -59,6 +61,15 @@ export class HudManager {
         this.lastData = data;
         this.lastMetrics = metrics;
         this.render(data, metrics);
+    }
+
+    public setVisible(visible: boolean): void {
+        this.visible = visible;
+        this.root.style.display = visible ? 'block' : 'none';
+    }
+
+    public isVisible(): boolean {
+        return this.visible;
     }
 
     private render(data: LocationInfo, metrics?: HudMetrics): void {

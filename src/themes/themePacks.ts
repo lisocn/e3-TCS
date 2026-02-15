@@ -31,8 +31,6 @@ export const THEME_PACKS = {
             '--panel-blur': '10px'
         },
         tacticalStyle: {
-            elevationMin: -200.0,
-            elevationMax: 7000.0,
             contourInterval: 220.0,
             contourThickness: 1.0,
             macroGridDensity: 14.0,
@@ -71,8 +69,6 @@ export const THEME_PACKS = {
             '--panel-blur': '6px'
         },
         tacticalStyle: {
-            elevationMin: -1500.0,
-            elevationMax: 5600.0,
             contourInterval: 95.0,
             contourThickness: 1.55,
             macroGridDensity: 24.0,

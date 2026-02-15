@@ -3,7 +3,7 @@
 ## 1. 背景与目标
 
 ### 1.1 初衷复述
-- 依据高程数据和比例尺采用不同渲染策略。
+- 依据高程数据和`metersPerPixel (mpp)` 采用不同渲染策略。
 - 全球尺度只需稳定呈现海岸线/大洲/陆地轮廓（允许极简渲染）。
 - 小比例尺（近景）需要逼近 `RedFlag.jpg` 的战术地貌风格。
 
@@ -31,18 +31,16 @@
 2. 态势层预算  
    目标：优先保证实体、轨迹、范围效果的实时性。
 
-地形按 `metersPerPixel (mpp)` 划分四档，不再使用单一策略覆盖全程。
+地形按 `metersPerPixel (mpp)` 划分四档，不使用单一策略覆盖全程。
 
-### 2.1 当前执行策略（2026-02-14）
-- 默认运行模式：`stableGlobalBaseline`
+### 2.1 当前执行策略（2026-02-15）
+- 默认运行模式：`adaptiveLod`
 - 行为：
-  - 固定 `global` 档位
-  - 默认稳定底线：`imagery + material off`
-  - 提供实验开关：`window.E3_CONFIG.enableGlobalMaterialAttempt=true` 时尝试 `global` 材质 + 本地 terrain
-  - 若 terrain 不可用或触发 OOM，自动回退稳定底线（会话内不再重试）
-- 原因：
-  - 当前环境中本地 terrain 解码链路可触发 `WebAssembly.instantiate` OOM。
-  - 在根因未彻底收敛前，先保障“稳定、可读、可联调”。
+  - 按 `mpp` 在 `global/continental/regional/tactical` 四档间自动切换
+  - tactical 材质采用 `normalEC` 主链路（法线+光照+坡度），不再走“高度+梯度主导”路线
+  - 保留 OOM 安全降级与高空椭球回退，优先保障稳定性
+- 说明：
+  - 早期实验开关与双模式分叉已移除，当前以单路径维护为准。
 
 ## 3. 四档渲染策略
 
@@ -67,8 +65,6 @@
 - terrain provider：本地 terrain 开启
 - tactical material：低成本档（无 micro-grid，弱 contour）
 - imagery：默认关闭（避免 global 底图残留遮挡 continental 材质表达）
-- 调试开关：`AppConfig.terrain.debug.showImageryInContinental`（开发阶段建议默认关闭）
-- 当前调试策略：`continental` 默认启用 `debugShading`，用于快速验证档位切换与材质通道
 
 3. `regional`
 - terrain provider：本地 terrain 开启
@@ -196,7 +192,7 @@ terrain: {
 应对：单一配置源（`themePacks + lodProfiles`），样式表仅保底变量。
 
 4. 风险：本地 terrain 触发 Wasm OOM 导致会话不稳定  
-应对：默认锁定 `stableGlobalBaseline`，OOM 熔断后会话内禁用本地 terrain，不再自动重试。
+应对：保留 OOM 熔断与高空椭球回退，触发后会话内禁用本地 terrain，不再自动重试。
 
 ## 9. 根因说明（为什么当前要这么做）
 
@@ -214,13 +210,13 @@ terrain: {
   - Cesium 版本实现细节
 
 ### 9.4 当前阶段边界
-- 其他档位（continental/regional/tactical）暂不作为交付目标推进。
-- 当前只维护 `global` 单档可读性与稳定性，后续按实验计划逐档恢复。
+- 四档 `adaptiveLod` 均已纳入主路径维护。
+- 当前工作重点从“路线探索”切换到 RedFlag 视觉精修与性能稳态优化。
 
 ### 9.3 是否是版本或操作系统问题
 - 当前证据不足以把问题归因到“单一版本 bug”或“单一 OS bug”。
 - 更准确表述是：在“当前版本 + 当前数据 + 当前环境”组合下出现内存峰值超限。
-- 因此先采用运行策略隔离（stable baseline）是低风险、可复现、可回滚的正确路径。
+- 因此当前采用“单路径 + 安全回退”的策略，兼顾稳定性与可维护性。
 
 ## 10. 开发清单（可直接开工）
 

@@ -4,16 +4,19 @@ import time
 from playwright.sync_api import sync_playwright
 
 
-def parse_bool_env(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+def ensure_screenshot_dir(path: str) -> str:
+    resolved = path.strip() or os.path.join("tests", "artifacts")
+    os.makedirs(resolved, exist_ok=True)
+    return resolved
 
 
-def run_once(round_idx: int, duration_seconds: int) -> int:
-    force_profile = os.getenv("FORCE_PROFILE", "").strip()
-    terrain_operation_mode = os.getenv("TERRAIN_OPERATION_MODE", "").strip()
-    adaptive_lod_max_profile = os.getenv("ADAPTIVE_LOD_MAX_PROFILE", "").strip()
-    enable_global_material_attempt = parse_bool_env("ENABLE_GLOBAL_MATERIAL_ATTEMPT")
-
+def run_once(
+    app_url: str,
+    screenshot_dir: str,
+    round_idx: int,
+    duration_seconds: int,
+    max_unhandled_rejections: int,
+) -> int:
     with sync_playwright() as p:
         print(f"[Round {round_idx}] Launching browser...")
         browser = p.chromium.launch(headless=True)
@@ -22,20 +25,8 @@ def run_once(round_idx: int, duration_seconds: int) -> int:
         page.on("console", lambda msg: logs.append(msg.text))
         page.on("pageerror", lambda err: logs.append(f"PAGEERROR: {err}"))
 
-        if force_profile or terrain_operation_mode or adaptive_lod_max_profile or enable_global_material_attempt:
-            page.add_init_script(
-                f"""
-                window.E3_CONFIG = Object.assign({{}}, window.E3_CONFIG || {{}}, {{
-                    forceProfile: {force_profile!r},
-                    terrainOperationMode: {terrain_operation_mode!r},
-                    adaptiveLodMaxProfile: {adaptive_lod_max_profile!r},
-                    enableGlobalMaterialAttempt: {str(enable_global_material_attempt).lower()}
-                }});
-                """
-            )
-
         try:
-            page.goto("http://localhost:5173", timeout=30000)
+            page.goto(app_url, timeout=30000)
             page.wait_for_selector(".cesium-viewer", timeout=30000)
         except Exception as exc:
             print(f"[Round {round_idx}] Failed to open app: {exc}")
@@ -70,11 +61,7 @@ def run_once(round_idx: int, duration_seconds: int) -> int:
         wasm_oom_count = log_text.count("WebAssembly.instantiate") + log_text.count("WASM OOM")
         unhandled_count = log_text.lower().count("unhandledrejection")
 
-        screenshot_path = (
-            f"lod_soak_round{round_idx}_"
-            f"{terrain_operation_mode or 'default'}_"
-            f"{adaptive_lod_max_profile or 'na'}.png"
-        )
+        screenshot_path = os.path.join(screenshot_dir, f"lod_soak_round{round_idx}.png")
         page.screenshot(path=screenshot_path)
 
         print(f"[Round {round_idx}] Mode={mode}")
@@ -88,17 +75,32 @@ def run_once(round_idx: int, duration_seconds: int) -> int:
 
         if wasm_oom_count > 0:
             return 3
+        if unhandled_count > max_unhandled_rejections:
+            return 4
         return 0
 
 
 def run() -> int:
+    app_url = os.getenv("E3_APP_URL", "http://localhost:5173").strip()
+    screenshot_dir = ensure_screenshot_dir(os.getenv("SOAK_SCREENSHOT_DIR", "").strip())
     rounds = int(os.getenv("SOAK_ROUNDS", "3"))
     duration_seconds = int(os.getenv("SOAK_DURATION_SECONDS", "240"))
+    max_unhandled_rejections = int(os.getenv("SOAK_MAX_UNHANDLED_REJECTIONS", "0"))
     fail_count = 0
 
-    print(f"Starting soak test: rounds={rounds}, duration={duration_seconds}s")
+    print(
+        f"Starting soak test: rounds={rounds}, duration={duration_seconds}s, "
+        f"max_unhandled_rejections={max_unhandled_rejections}, app_url={app_url}, "
+        f"screenshot_dir={screenshot_dir}"
+    )
     for idx in range(1, rounds + 1):
-        rc = run_once(idx, duration_seconds)
+        rc = run_once(
+            app_url,
+            screenshot_dir,
+            idx,
+            duration_seconds,
+            max_unhandled_rejections,
+        )
         if rc != 0:
             fail_count += 1
 
