@@ -67,9 +67,9 @@ export class TacticalOverlayManager {
         const east = -117.55;
         const south = 36.15;
         const north = 36.92;
-        const lonStep = 0.14;
-        const latStep = 0.11;
-        const gridColor = Color.fromCssColorString('#59f0ff').withAlpha(0.36);
+        const lonStep = 0.11;
+        const latStep = 0.09;
+        const gridColor = Color.fromCssColorString('#f4c76a').withAlpha(0.30);
 
         for (let lon = west; lon <= east + 1e-6; lon += lonStep) {
             const entity = this.viewer.entities.add({
@@ -79,7 +79,7 @@ export class TacticalOverlayManager {
                         lon, south,
                         lon, north
                     ]),
-                    width: 1.6,
+                    width: 1.15,
                     clampToGround: true,
                     material: gridColor
                 }
@@ -95,7 +95,7 @@ export class TacticalOverlayManager {
                         west, lat,
                         east, lat
                     ]),
-                    width: 1.6,
+                    width: 1.15,
                     clampToGround: true,
                     material: gridColor
                 }
@@ -105,7 +105,7 @@ export class TacticalOverlayManager {
     }
 
     private addAirCorridors(): void {
-        const corridorColor = Color.fromCssColorString('#3ce8ff').withAlpha(0.75);
+        const corridorColor = Color.fromCssColorString('#4ae8ff').withAlpha(0.78);
         const strikeColor = Color.fromCssColorString('#ff45a1').withAlpha(0.82);
         const corridorA = this.viewer.entities.add({
             name: 'RedFlag.CorridorA',
@@ -115,7 +115,7 @@ export class TacticalOverlayManager {
                     -118.42, 36.55, 6800,
                     -118.05, 36.70, 6400
                 ]),
-                width: 7.0,
+                width: 10.5,
                 material: corridorColor
             }
         });
@@ -127,7 +127,7 @@ export class TacticalOverlayManager {
                     -118.34, 36.40, 6600,
                     -117.95, 36.58, 6200
                 ]),
-                width: 7.0,
+                width: 10.5,
                 material: corridorColor
             }
         });

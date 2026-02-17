@@ -31,6 +31,8 @@ export type I18nKey =
     | 'app.showTopHud'
     | 'app.hideBottomHud'
     | 'app.showBottomHud'
+    | 'app.alignRedFlagView'
+    | 'app.redFlagAligned'
     | 'hud.title'
     | 'hud.lon'
     | 'hud.lat'
@@ -81,6 +83,8 @@ export const resources: Record<LanguageCode, ResourceTable> = {
         'app.showTopHud': '显示面板',
         'app.hideBottomHud': '隐藏左下 HUD',
         'app.showBottomHud': '显示左下 HUD',
+        'app.alignRedFlagView': '对齐 RedFlag 视角',
+        'app.redFlagAligned': '已对齐 RedFlag 参考视角',
         'hud.title': '[战术 HUD]',
         'hud.lon': '经度',
         'hud.lat': '纬度',
@@ -128,6 +132,8 @@ export const resources: Record<LanguageCode, ResourceTable> = {
         'app.showTopHud': 'Show Panel',
         'app.hideBottomHud': 'Hide Bottom HUD',
         'app.showBottomHud': 'Show Bottom HUD',
+        'app.alignRedFlagView': 'Align RedFlag View',
+        'app.redFlagAligned': 'RedFlag reference view aligned',
         'hud.title': '[TACTICAL HUD]',
         'hud.lon': 'LON',
         'hud.lat': 'LAT',

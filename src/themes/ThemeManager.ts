@@ -109,6 +109,7 @@ export class ThemeManager {
         // 当本地 terrain 覆盖不完整时，会回退到 baseColor；使用主题低海拔色避免整球发黑。
         const fallbackBaseColor = tacticalStyle?.colorLow ?? '#1a1f24';
         scene.globe.baseColor = Color.fromCssColorString(fallbackBaseColor);
+        // 保留 skirt 以避免 quantized-mesh tile 边界出现几何裂缝黑线。
         scene.globe.showSkirts = true;
         scene.requestRenderMode = true;
         scene.maximumRenderTimeChange = 0.5;

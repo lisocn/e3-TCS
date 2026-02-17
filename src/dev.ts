@@ -11,6 +11,15 @@ declare global {
         viewer: Cesium.Viewer;
         Cesium?: typeof Cesium;
         runDiagnostics?: () => Promise<void>;
+        alignRedFlagReference?: (variant?: 'wide' | 'focus') => void;
+        clearRedFlagOverlay?: () => void;
+        getCameraPose?: () => {
+            longitude: number;
+            latitude: number;
+            height: number;
+            heading: number;
+            pitch: number;
+        };
         getLodRuntimeStats?: () => LodSwitchStats;
         getLodState?: () => { profile: string; metersPerPixel: number };
         getTerrainRuntimeMode?: () => string;
@@ -41,6 +50,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const showTopHudBtn = document.getElementById('show-top-hud-btn') as HTMLButtonElement | null;
     const toggleBottomHudBtn = document.getElementById('toggle-bottom-hud-btn') as HTMLButtonElement | null;
     const diagBtn = document.getElementById('run-diag-btn') as HTMLButtonElement | null;
+    const alignRedFlagBtn = document.getElementById('align-redflag-btn') as HTMLButtonElement | null;
     const diagLogs = document.getElementById('diag-logs');
 
     await i18n.init(AppConfig.i18n.defaultLanguage);
@@ -60,6 +70,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (diagBtn) {
             diagBtn.innerText = i18n.t('app.runSelfDiagnosis');
+        }
+        if (alignRedFlagBtn) {
+            alignRedFlagBtn.innerText = i18n.t('app.alignRedFlagView');
         }
         if (toggleTopHudBtn) {
             toggleTopHudBtn.innerText = topHudVisible ? i18n.t('app.hideTopHud') : i18n.t('app.showTopHud');
@@ -154,6 +167,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         };
         window.runDiagnostics = () => viewerInstance.runDiagnostics();
+        window.alignRedFlagReference = (variant: 'wide' | 'focus' = 'wide') => {
+            viewerInstance.alignToRedFlagReference({
+                includeOverlay: false,
+                useFlyTo: true,
+                variant
+            });
+        };
+        window.clearRedFlagOverlay = () => viewerInstance.clearTacticalOverlay();
+        window.getCameraPose = () => {
+            const c = viewer.camera.positionCartographic;
+            return {
+                longitude: Cesium.Math.toDegrees(c.longitude),
+                latitude: Cesium.Math.toDegrees(c.latitude),
+                height: c.height,
+                heading: Cesium.Math.toDegrees(viewer.camera.heading),
+                pitch: Cesium.Math.toDegrees(viewer.camera.pitch)
+            };
+        };
         window.getLodRuntimeStats = () => viewerInstance.getLodSwitchStats();
         window.getLodState = () => ({
             profile: viewerInstance.getCurrentLodProfile(),
@@ -239,6 +270,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             toggleBottomHudBtn.onclick = () => {
                 bottomHudVisible = !bottomHudVisible;
                 applyBottomHudVisibility();
+            };
+        }
+
+        if (alignRedFlagBtn) {
+            alignRedFlagBtn.onclick = () => {
+                viewerInstance.alignToRedFlagReference({
+                    includeOverlay: false,
+                    useFlyTo: true,
+                    variant: 'wide'
+                });
+                if (statusText) {
+                    statusText.innerText = i18n.t('app.redFlagAligned');
+                    statusText.style.color = 'var(--color-accent)';
+                }
             };
         }
 

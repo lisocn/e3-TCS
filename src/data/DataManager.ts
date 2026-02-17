@@ -64,10 +64,10 @@ export class DataManager {
             if (sampledHeight !== undefined && Number.isFinite(sampledHeight)) {
                 elevation = sampledHeight;
             } else {
-                elevation = this.viewer.scene.globe.getHeight(point) ?? 0;
+                elevation = this.resolveFastElevation(point);
             }
         } catch {
-            elevation = this.viewer.scene.globe.getHeight(point) ?? 0;
+            elevation = this.resolveFastElevation(point);
         }
 
         return this.buildLocationInfo(point, elevation);
@@ -78,8 +78,19 @@ export class DataManager {
      */
     public queryPositionInfoFast(cartographic: Cartographic): LocationInfo {
         const point = Cartographic.clone(cartographic);
-        const elevation = this.viewer.scene.globe.getHeight(point) ?? 0;
+        const elevation = this.resolveFastElevation(point);
         return this.buildLocationInfo(point, elevation);
+    }
+
+    private resolveFastElevation(point: Cartographic): number {
+        const globeHeight = this.viewer.scene.globe.getHeight(point);
+        if (globeHeight !== undefined && Number.isFinite(globeHeight)) {
+            return globeHeight;
+        }
+        if (Number.isFinite(point.height)) {
+            return point.height;
+        }
+        return 0;
     }
 
     private buildLocationInfo(point: Cartographic, elevation: number): LocationInfo {

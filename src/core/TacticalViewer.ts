@@ -7,6 +7,8 @@ import {
     Math as CesiumMath,
     Cartesian3,
     Cartographic,
+    BoundingSphere,
+    HeadingPitchRange,
     ScreenSpaceEventHandler,
     ScreenSpaceEventType,
     Cartesian2
@@ -78,7 +80,9 @@ export class TacticalViewer {
     private hudManager: HudManager;
     private mouseMoveHandler?: ScreenSpaceEventHandler;
     private hudDebounceTimer?: ReturnType<typeof setTimeout>;
-    private hudQueryToken: number;
+    private hudUpdateToken: number;
+    private onCanvasWheel?: EventListener;
+    private wheelZoomInSign: -1 | 0 | 1;
     private maxZoomOutHeight: number;
     private onWindowResize?: () => void;
     private diagnostics: VisualDiagnostics;
@@ -117,7 +121,8 @@ export class TacticalViewer {
         this.localTerrainBlockedByOom = false;
         this.terrainUrl = terrainUrl;
         this.terrainRequestVertexNormals = useDynamicTerrain;
-        this.hudQueryToken = 0;
+        this.hudUpdateToken = 0;
+        this.wheelZoomInSign = -1;
         this.maxZoomOutHeight = Number.POSITIVE_INFINITY;
         // 初始化先用 global，避免在高空短暂误用本地 terrain 导致内存峰值。
         this.currentLodProfile = 'global';
@@ -235,6 +240,46 @@ export class TacticalViewer {
     }
 
     /**
+     * 对齐到 RedFlag 参考视角，便于与参考图进行差异对照。
+     */
+    public alignToRedFlagReference(options: {
+        includeOverlay?: boolean;
+        useFlyTo?: boolean;
+        variant?: 'wide' | 'focus';
+    } = {}): void {
+        const includeOverlay = options.includeOverlay ?? false;
+        const useFlyTo = options.useFlyTo ?? true;
+        const variant = options.variant ?? 'wide';
+        if (includeOverlay) {
+            this.overlayManager.applyRedFlagScenario();
+        } else {
+            this.overlayManager.clear();
+        }
+        const redFlagArea = BoundingSphere.fromPoints([
+            Cartesian3.fromDegrees(-118.95, 36.15, 0.0),
+            Cartesian3.fromDegrees(-118.95, 36.92, 0.0),
+            Cartesian3.fromDegrees(-117.55, 36.15, 0.0),
+            Cartesian3.fromDegrees(-117.55, 36.92, 0.0)
+        ]);
+        const offset = variant === 'focus'
+            ? new HeadingPitchRange(CesiumMath.toRadians(58.0), CesiumMath.toRadians(-33.0), 98000.0)
+            : new HeadingPitchRange(CesiumMath.toRadians(64.0), CesiumMath.toRadians(-38.0), 228000.0);
+        this.viewer.camera.flyToBoundingSphere(redFlagArea, {
+            offset,
+            duration: useFlyTo ? 1.8 : 0.0
+        });
+        this.viewer.scene.requestRender();
+    }
+
+    /**
+     * 清理战术叠加层（网格/航迹/单位）。
+     */
+    public clearTacticalOverlay(): void {
+        this.overlayManager.clear();
+        this.viewer.scene.requestRender();
+    }
+
+    /**
      * 设置 HUD 模式
      */
     public setHudMode(mode: HudMode): void {
@@ -343,6 +388,11 @@ export class TacticalViewer {
             this.mouseMoveHandler.destroy();
             this.mouseMoveHandler = undefined;
         }
+        if (this.onCanvasWheel) {
+            this.viewer.scene.canvas.removeEventListener('wheel', this.onCanvasWheel, true);
+            this.viewer.container.removeEventListener('wheel', this.onCanvasWheel, true);
+            this.onCanvasWheel = undefined;
+        }
         if (this.onWindowResize) {
             window.removeEventListener('resize', this.onWindowResize);
             this.onWindowResize = undefined;
@@ -372,6 +422,7 @@ export class TacticalViewer {
         this.setupZoomOutLimit();
         this.setupLodProfileSwitching();
         this.setupHudTracking();
+        this.setupZoomInputGuard();
         if (AppConfig.tacticalOverlay.enabled && AppConfig.tacticalOverlay.scenario === 'redFlagDemo') {
             this.overlayManager.applyRedFlagScenario();
         }
@@ -406,30 +457,70 @@ export class TacticalViewer {
     private setupHudTracking(): void {
         this.mouseMoveHandler = new ScreenSpaceEventHandler(this.viewer.scene.canvas);
         this.mouseMoveHandler.setInputAction((movement: { endPosition: Cartesian2 }) => {
+            const token = ++this.hudUpdateToken;
             const pos = movement.endPosition;
             this.hudManager.setFollowPosition(pos.x, pos.y);
             const cartographic = this.pickCartographic(pos);
             if (!cartographic) return;
             const metrics = this.computeHudMetrics(pos, cartographic);
 
-            // 鼠标移动时先同步刷新（经纬度/快速高程），保证 HUD 连续变化。
-            const fastInfo = this.dataManager.queryPositionInfoFast(cartographic);
-            this.hudManager.update(fastInfo, metrics);
-
+            // 用户要求：移动过程中不刷新高度，避免显示错误数据。
+            // 仅在鼠标短暂停留后执行精确查询更新 HUD。
             if (this.hudDebounceTimer) {
                 clearTimeout(this.hudDebounceTimer);
             }
-            // 精确查询异步回填，避免高频 sampleTerrain 造成卡顿。
             this.hudDebounceTimer = setTimeout(() => {
-                void this.queryAndUpdateHudDetailed(cartographic, metrics);
-            }, 60);
+                if (token !== this.hudUpdateToken) return;
+                void this.queryAndUpdateHudDetailed(token, cartographic, metrics);
+            }, 180);
         }, ScreenSpaceEventType.MOUSE_MOVE);
     }
 
-    private async queryAndUpdateHudDetailed(cartographic: Cartographic, metrics: HudMetrics): Promise<void> {
-        const token = ++this.hudQueryToken;
+    private setupZoomInputGuard(): void {
+        const tacticalMinMpp = 100.0;
+        this.onCanvasWheel = (evt: Event) => {
+            const event = evt as WheelEvent;
+            if (this.currentLodProfile !== 'tactical') return;
+            const sign = Math.sign(event.deltaY) as -1 | 0 | 1;
+            if (sign === 0) return;
+            const mppBefore = this.estimateCenterMetersPerPixel();
+            if (!Number.isFinite(mppBefore)) return;
+
+            // 在 tactical 下，当达到最小 mpp 边界时，拦截“继续放大”输入。
+            // zoom-in 的滚轮方向在不同设备上可能相反，使用运行时自学习方向。
+            const nearMinBoundary = mppBefore <= tacticalMinMpp + 2.0;
+            const wantsZoomIn = this.wheelZoomInSign === 0
+                ? sign < 0
+                : sign === this.wheelZoomInSign;
+            if (nearMinBoundary && wantsZoomIn) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                return;
+            }
+
+            // 在非边界区间采样一次输入方向，自动识别当前设备的 zoom-in 符号。
+            if (mppBefore > tacticalMinMpp + 8.0 && mppBefore < tacticalMinMpp * 6.0) {
+                requestAnimationFrame(() => {
+                    const mppAfter = this.estimateCenterMetersPerPixel();
+                    if (!Number.isFinite(mppAfter)) return;
+                    if (mppAfter < mppBefore - 0.5) {
+                        this.wheelZoomInSign = sign;
+                    } else if (mppAfter > mppBefore + 0.5) {
+                        this.wheelZoomInSign = (sign === -1 ? 1 : -1);
+                    }
+                });
+            }
+        };
+        // 使用 capture 阶段，确保在 Cesium 内部处理前拦截。
+        const wheelOptions: AddEventListenerOptions = { passive: false, capture: true };
+        this.viewer.container.addEventListener('wheel', this.onCanvasWheel, wheelOptions);
+        this.viewer.scene.canvas.addEventListener('wheel', this.onCanvasWheel, wheelOptions);
+    }
+
+    private async queryAndUpdateHudDetailed(token: number, cartographic: Cartographic, metrics: HudMetrics): Promise<void> {
         const info = await this.dataManager.queryPositionInfo(cartographic);
-        if (token !== this.hudQueryToken) return;
+        if (token !== this.hudUpdateToken) return;
         this.hudManager.update(info, metrics);
     }
 
@@ -483,22 +574,12 @@ export class TacticalViewer {
     }
 
     private pickCartographic(screenPosition: Cartesian2): Cartographic | undefined {
-        // 按鼠标经纬度查询：优先使用椭球拾取，避免地形网格洞/回退地形干扰。
-        const ellipsoid = Ellipsoid.WGS84;
-        const ellipsoidCartesian = this.viewer.camera.pickEllipsoid(screenPosition, ellipsoid);
-        if (ellipsoidCartesian) {
-            const cartographic = Cartographic.fromCartesian(ellipsoidCartesian, ellipsoid);
-            if (cartographic) return cartographic;
-        }
-
+        // HUD 高程应优先对齐“地形交点”，避免斜视时椭球拾取产生错误海拔。
         const ray = this.viewer.camera.getPickRay(screenPosition);
         if (!ray) return undefined;
-        const cartesian = this.viewer.scene.globe.pick(ray, this.viewer.scene);
-        if (!cartesian) return undefined;
-
-        const cartographic = Cartographic.fromCartesian(cartesian);
-        if (!cartographic) return undefined;
-        return cartographic;
+        const terrainCartesian = this.viewer.scene.globe.pick(ray, this.viewer.scene);
+        if (!terrainCartesian) return undefined;
+        return Cartographic.fromCartesian(terrainCartesian) ?? undefined;
     }
 
     /**
@@ -603,10 +684,10 @@ export class TacticalViewer {
         this.currentLodConfig = AppConfig.terrain.lodProfiles[profile];
         this.enforceCameraSafetyBounds();
         this.applyTerrainProviderByLod(this.currentLodConfig);
-        this.applyTacticalVisualizationHints(profile);
         this.dataManager.setQueryLevel(this.currentLodConfig.queryLevel);
         this.ensureTacticalObliqueView(profile);
         this.applyTheme(this.currentTheme);
+        this.applyTacticalVisualizationHints(profile);
         if (emitLog) {
             const durationMs = performance.now() - begin;
             this.lodSwitchCount += 1;
@@ -624,19 +705,26 @@ export class TacticalViewer {
         const camera = this.viewer.camera;
         const pos = camera.positionCartographic;
         if (!pos) return;
-        const minHeight = this.currentLodProfile === 'tactical' ? 900.0 : 2500.0;
-        const needsHeightClamp = Number.isFinite(pos.height) && pos.height < minHeight;
-        const needsPitchClamp = this.currentLodProfile !== 'global' && camera.pitch > CesiumMath.toRadians(-8.0);
-        if (!needsHeightClamp && !needsPitchClamp) return;
+        const isTactical = this.currentLodProfile === 'tactical';
+        const minHeight = isTactical ? 18000.0 : 2500.0;
+        const maxHeight = Number.POSITIVE_INFINITY;
+        const pitchMin = isTactical ? CesiumMath.toRadians(-45.0) : Number.NEGATIVE_INFINITY;
+        const pitchMax = isTactical ? CesiumMath.toRadians(-20.0) : CesiumMath.toRadians(-8.0);
+        const needsMinHeightClamp = Number.isFinite(pos.height) && pos.height < minHeight;
+        const needsMaxHeightClamp = Number.isFinite(maxHeight) && Number.isFinite(pos.height) && pos.height > maxHeight;
+        const needsPitchClamp = Number.isFinite(camera.pitch) && (camera.pitch < pitchMin || camera.pitch > pitchMax);
+        const clampedHeight = CesiumMath.clamp(pos.height, minHeight, maxHeight);
+        const clampedPitch = CesiumMath.clamp(camera.pitch, pitchMin, pitchMax);
+        if (!needsMinHeightClamp && !needsMaxHeightClamp && !needsPitchClamp) return;
         camera.setView({
             destination: Cartesian3.fromRadians(
                 pos.longitude,
                 pos.latitude,
-                needsHeightClamp ? minHeight : pos.height
+                clampedHeight
             ),
             orientation: {
                 heading: camera.heading,
-                pitch: needsPitchClamp ? CesiumMath.toRadians(-18.0) : camera.pitch,
+                pitch: clampedPitch,
                 roll: 0.0
             }
         });
@@ -645,27 +733,48 @@ export class TacticalViewer {
     private applyTacticalVisualizationHints(profile: TerrainLodProfileName): void {
         // tactical 档位下提高地形可读性，避免近地贴视角时“看起来一片平”。
         if (profile === 'tactical') {
-            this.viewer.scene.verticalExaggeration = 2.2;
-            this.viewer.scene.globe.maximumScreenSpaceError = 1.2;
-            // 允许近地低空观察起伏，但保留最小安全距离避免穿地。
-            this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 800.0;
+            this.viewer.scene.verticalExaggeration = 1.85;
+            this.viewer.scene.globe.maximumScreenSpaceError = 1.6;
+            this.viewer.scene.globe.showSkirts = true;
+            // tactical 下最小缩放距离按 mpp=100 反推，避免输入设备差异导致继续放大。
+            const minHeightByMpp = this.estimateHeightForMetersPerPixel(100.0);
+            this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = Math.max(18000.0, minHeightByMpp);
+            this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
+            this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.0;
             return;
         }
         if (profile === 'regional') {
-            this.viewer.scene.verticalExaggeration = 1.4;
-            this.viewer.scene.globe.maximumScreenSpaceError = 2.2;
+            this.viewer.scene.verticalExaggeration = 1.75;
+            this.viewer.scene.globe.maximumScreenSpaceError = 1.8;
+            this.viewer.scene.globe.showSkirts = true;
             this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 500.0;
+            this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
+            this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
             return;
         }
         if (profile === 'continental') {
-            this.viewer.scene.verticalExaggeration = 1.1;
-            this.viewer.scene.globe.maximumScreenSpaceError = 4.0;
+            this.viewer.scene.verticalExaggeration = 1.45;
+            this.viewer.scene.globe.maximumScreenSpaceError = 2.8;
+            this.viewer.scene.globe.showSkirts = true;
             this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
+            this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
+            this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
             return;
         }
         this.viewer.scene.verticalExaggeration = 1.0;
         this.viewer.scene.globe.maximumScreenSpaceError = 7.5;
+        this.viewer.scene.globe.showSkirts = true;
         this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
+        this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
+        this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
+    }
+
+    private estimateHeightForMetersPerPixel(targetMpp: number): number {
+        const frustum = this.viewer.camera.frustum as { fovy?: number };
+        const fovy = frustum.fovy ?? CesiumMath.toRadians(60.0);
+        const viewportHeight = Math.max(1, this.viewer.scene.canvas.clientHeight);
+        const height = (Math.max(0.001, targetMpp) * viewportHeight) / (2 * Math.tan(fovy / 2));
+        return Math.max(1.0, height);
     }
 
     private ensureTacticalObliqueView(profile: TerrainLodProfileName): void {
@@ -673,9 +782,9 @@ export class TacticalViewer {
         const camera = this.viewer.camera;
         const pitch = camera.pitch;
         // 当用户几乎俯视地面时，地形起伏会被视觉压扁；进入 tactical 时自动拉到斜视角。
-        if (!Number.isFinite(pitch) || pitch > -1.25) return;
+        if (!Number.isFinite(pitch) || pitch <= -0.55) return;
         const pos = camera.positionCartographic;
-        const targetHeight = CesiumMath.clamp(pos.height * 0.35, 2200.0, 9500.0);
+        const targetHeight = CesiumMath.clamp(pos.height * 0.70, 18000.0, 32000.0);
         const destination = Cartesian3.fromRadians(
             pos.longitude,
             pos.latitude,

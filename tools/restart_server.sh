@@ -15,6 +15,7 @@ LOG_FILE="${GIS_PROJECT_PATH}/e3_tiles_server.log"
 PID_FILE="${GIS_PROJECT_PATH}/server.pid"
 FRONTEND_PID_FILE="${PROJECT_ROOT}/.vite.pid"
 FRONTEND_LOG_FILE="/tmp/e3-tcs-vite.log"
+VITE_BIN="${PROJECT_ROOT}/node_modules/.bin/vite"
 
 # Web Server Configuration
 WEB_PORT=5173
@@ -39,6 +40,23 @@ process_matches() {
     local cmdline
     cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
     [[ -n "$cmdline" && "$cmdline" == *"$expected"* ]]
+}
+
+find_vite_listener_pid() {
+    local pids
+    pids=$(lsof -ti :"$WEB_PORT" 2>/dev/null || true)
+    if [ -z "$pids" ]; then
+        return 1
+    fi
+
+    for pid in $pids; do
+        if process_matches "$pid" "$PROJECT_ROOT" && process_matches "$pid" "vite"; then
+            echo "$pid"
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 terminate_pid() {
@@ -169,20 +187,65 @@ if [ -n "$PORT_PIDS" ]; then
     done
 fi
 
+# 等待端口释放，避免把旧进程误当作新启动成功。
+for i in {1..20}; do
+    if ! lsof -i :"$WEB_PORT" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 0.25
+done
+if lsof -i :"$WEB_PORT" > /dev/null 2>&1; then
+    echo -e "${RED}[ERROR] Port $WEB_PORT is still occupied before Vite start. Abort restart.${NC}"
+    lsof -i :"$WEB_PORT" || true
+    exit 1
+fi
+
 echo -e "${YELLOW}[INFO] Starting Vite...${NC}"
 cd "$PROJECT_ROOT"
-# 使用 nohup 保证脚本退出后 Vite 仍持续运行。
-nohup npm run dev -- --host 0.0.0.0 --port "$WEB_PORT" > "$FRONTEND_LOG_FILE" 2>&1 &
-echo "$!" > "$FRONTEND_PID_FILE"
+# 直接启动 vite 可执行文件，避免 npm 包装进程提前退出导致的 PID 与生命周期错配。
+if [ -x "$VITE_BIN" ]; then
+    nohup "$VITE_BIN" --host 0.0.0.0 --port "$WEB_PORT" > "$FRONTEND_LOG_FILE" 2>&1 &
+else
+    # 兜底：仍保留 npm 启动方式。
+    nohup npm run dev -- --host 0.0.0.0 --port "$WEB_PORT" > "$FRONTEND_LOG_FILE" 2>&1 &
+fi
+VITE_LAUNCHER_PID=$!
 
 # Verify Web Server
-sleep 2
-if lsof -i :$WEB_PORT > /dev/null; then
-    echo -e "${GREEN}[SUCCESS] Web server started. Listening on http://localhost:$WEB_PORT${NC}"
-    echo "Vite logs: $FRONTEND_LOG_FILE"
+VITE_READY_PID=""
+for i in {1..20}; do
+    if VITE_READY_PID=$(find_vite_listener_pid); then
+        break
+    fi
+
+    # 启动器提前退出且端口仍未监听，判定启动失败。
+    if ! is_pid_running "$VITE_LAUNCHER_PID" && ! lsof -i :"$WEB_PORT" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 0.5
+done
+
+if [ -n "$VITE_READY_PID" ]; then
+    echo "$VITE_READY_PID" > "$FRONTEND_PID_FILE"
+    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$WEB_PORT" | grep -q "^200$"; then
+        echo -e "${GREEN}[SUCCESS] Web server started. Listening on http://localhost:$WEB_PORT${NC}"
+        echo "Vite PID: $VITE_READY_PID"
+        echo "Vite logs: $FRONTEND_LOG_FILE"
+    else
+        echo -e "${RED}[ERROR] Vite process exists but HTTP probe failed on port $WEB_PORT.${NC}"
+        echo "Check logs: $FRONTEND_LOG_FILE"
+        tail -n 40 "$FRONTEND_LOG_FILE" 2>/dev/null || true
+        exit 1
+    fi
 else
     echo -e "${RED}[ERROR] Web server failed to start.${NC}"
+    if lsof -i :"$WEB_PORT" > /dev/null 2>&1; then
+        echo -e "${RED}[ERROR] Port $WEB_PORT is occupied by a non-project vite process.${NC}"
+        lsof -i :"$WEB_PORT" || true
+    fi
     echo "Check logs: $FRONTEND_LOG_FILE"
+    tail -n 40 "$FRONTEND_LOG_FILE" 2>/dev/null || true
+    exit 1
 fi
 
 echo -e "${GREEN}--- All services restarted successfully ---${NC}"

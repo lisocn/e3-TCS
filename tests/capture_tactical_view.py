@@ -31,6 +31,8 @@ def run() -> int:
         "capture_tactical_view.png",
     )
     scan_nevada = parse_bool_env("CAPTURE_SCAN_NEVADA", "true")
+    align_redflag = os.getenv("CAPTURE_ALIGN_REDFLAG", "").strip().lower()
+    terrain_only = parse_bool_env("CAPTURE_TERRAIN_ONLY", "true")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -42,7 +44,33 @@ def run() -> int:
         page.wait_for_selector(".cesium-viewer", timeout=30000)
         time.sleep(wait_seconds)
 
-        if scan_nevada:
+        if terrain_only:
+            page.evaluate(
+                """
+                (() => {
+                    if (window.clearRedFlagOverlay) {
+                        window.clearRedFlagOverlay();
+                    }
+                })()
+                """
+            )
+
+        if align_redflag in ("wide", "focus"):
+            aligned = page.evaluate(
+                """
+                (variant) => {
+                    if (window.alignRedFlagReference) {
+                        window.alignRedFlagReference(variant);
+                        return true;
+                    }
+                    return false;
+                }
+                """,
+                align_redflag,
+            )
+            print(f"RedFlagAlign: variant={align_redflag} applied={aligned}")
+            time.sleep(2.2)
+        elif scan_nevada:
             best_focus = page.evaluate(
                 """
                 async () => {
