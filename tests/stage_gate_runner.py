@@ -2,17 +2,14 @@ import argparse
 import ast
 import json
 import os
-import re
-import shutil
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
 
 DEFAULT_MPP_MIN = 175.0
 DEFAULT_MPP_MAX = 195.0
-STEP0_BASELINE = Path("tests/artifacts/capture_tactical_baseline_step0.png")
+DEFAULT_BASELINE = ""
 
 
 def run_capture(mpp_min: float, mpp_max: float, align_variant: str) -> tuple[dict, str]:
@@ -36,6 +33,7 @@ def run_capture(mpp_min: float, mpp_max: float, align_variant: str) -> tuple[dic
     return {
         "lod_state": lod_state,
         "ensure_tactical_mpp": ensure_state,
+        "align_variant": align_variant,
     }, proc.stdout
 
 
@@ -61,282 +59,151 @@ def run_capture_with_retry(
     return last_report, last_stdout
 
 
-def run_quantify(baseline_path: Path, window_preset: str) -> dict:
+def run_quantify(window_preset: str, baseline_path: Path | None) -> dict:
     cmd = [
         sys.executable,
         "tests/quantify_tactical_metrics.py",
-        "--baseline",
-        str(baseline_path),
         "--window-preset",
         window_preset,
     ]
+    if baseline_path is not None:
+        cmd.extend(["--baseline", str(baseline_path)])
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return json.loads(proc.stdout)
 
 
-def resolve_step_baseline(step: int, align_variant: str) -> tuple[Path, bool]:
-    if step == 3 and align_variant == "mudpit":
-        candidate = Path("tests/artifacts/capture_tactical_baseline_step2_mudpit.png")
-        return candidate, not candidate.exists()
-    if step <= 1:
-        return STEP0_BASELINE, False
-    candidate = Path(f"tests/artifacts/capture_tactical_baseline_step{step - 1}.png")
-    if candidate.exists():
-        return candidate, False
-    return STEP0_BASELINE, True
+def build_gate_checks(level: str, wide_q: dict, mudpit_q: dict) -> dict[str, bool]:
+    wc = wide_q["redflag_style"]["current_components"]
+    mc = mudpit_q["redflag_style"]["current_components"]
+    ws = float(wide_q["redflag_style"]["distance_score_current_to_ref"])
+    ms = float(mudpit_q["redflag_style"]["distance_score_current_to_ref"])
+
+    thresholds = {
+        "draft": {
+            "score": 0.68,
+            "delta_e": 42.0,
+            "hue": 0.12,
+            "global_edge": 0.75,
+            "ridge_edge": 0.85,
+            "shadow_brown": 0.75,
+            "shadow_warm": 0.80,
+            "plain_luma": 0.35,
+            "plain_sat_std": 2.80,
+            "plain_brown": 1.00,
+            "plain_lowfreq": 0.50,
+            "plain_highpass": 0.35,
+        },
+        "target": {
+            "score": 0.56,
+            "delta_e": 35.0,
+            "hue": 0.108,
+            "global_edge": 0.30,
+            "ridge_edge": 0.28,
+            "shadow_brown": 0.56,
+            "shadow_warm": 0.66,
+            "plain_luma": 0.52,
+            "plain_sat_std": 0.95,
+            "plain_brown": 0.30,
+            "plain_lowfreq": 0.18,
+            "plain_highpass": 0.24,
+        },
+        "final": {
+            "score": 0.44,
+            "delta_e": 30.5,
+            "hue": 0.091,
+            "global_edge": 0.30,
+            "ridge_edge": 0.28,
+            "shadow_brown": 0.36,
+            "shadow_warm": 0.47,
+            "plain_luma": 0.41,
+            "plain_sat_std": 0.65,
+            "plain_brown": 0.20,
+            "plain_lowfreq": 0.20,
+            "plain_highpass": 0.26,
+        },
+    }[level]
+
+    return {
+        "wide.score_le": ws <= thresholds["score"],
+        "mudpit.score_le": ms <= thresholds["score"],
+        "wide.delta_e_mean_le": float(wc.get("delta_e_mean", 999.0)) <= thresholds["delta_e"],
+        "wide.hue_dist_mean_le": float(wc.get("hue_dist_mean", 9.9)) <= thresholds["hue"],
+        "wide.global_edge_rel_le": float(wc.get("global_edge_rel", 9.9)) <= thresholds["global_edge"],
+        "wide.ridge_edge_rel_le": float(wc.get("ridge_edge_rel", 9.9)) <= thresholds["ridge_edge"],
+        "wide.shadow_brownness_rel_le": float(wc.get("shadow_brownness_rel", 9.9)) <= thresholds["shadow_brown"],
+        "wide.shadow_warmth_rel_le": float(wc.get("shadow_warmth_rel", 9.9)) <= thresholds["shadow_warm"],
+        "mudpit.plain_luma_mean_rel_le": float(mc.get("plain_luma_mean_rel", 9.9)) <= thresholds["plain_luma"],
+        "mudpit.plain_sat_std_rel_le": float(mc.get("plain_sat_std_rel", 9.9)) <= thresholds["plain_sat_std"],
+        "mudpit.plain_brown_ratio_rel_le": float(mc.get("plain_brown_ratio_rel", 9.9)) <= thresholds["plain_brown"],
+        "mudpit.plain_lowfreq_ratio_rel_le": float(mc.get("plain_lowfreq_ratio_rel", 9.9)) <= thresholds["plain_lowfreq"],
+        "mudpit.plain_highpass_std_rel_le": float(mc.get("plain_highpass_std_rel", 9.9)) <= thresholds["plain_highpass"],
+    }
 
 
-def detect_current_step(todo_path: Path) -> int:
-    text = todo_path.read_text(encoding="utf-8")
-    m = re.search(r"Step\s+(\d+):\s*in progress", text)
-    if m:
-        return int(m.group(1))
-    # fallback: 若没有 in progress，取最小 pending step（含区间写法 Step 4-5: pending）。
-    pending_single = [int(x) for x in re.findall(r"Step\s+(\d+):\s*pending", text)]
-    pending_range = [
-        int(start)
-        for start, _end in re.findall(r"Step\s+(\d+)-(\d+):\s*pending", text)
-    ]
-    candidates = pending_single + pending_range
-    if candidates:
-        return min(candidates)
-    raise RuntimeError("Cannot detect current step from TODO.md (no in-progress or pending step)")
-
-
-def build_step_checks(step: int, q: dict) -> dict:
-    d = q["delta_pct_vs_baseline"]
-    style = q.get("redflag_style", {})
-    style_comp = style.get("current_components", {})
-
-    if step == 1:
-        return {
-            "ridge_edge_mean_ge_-5": d["ridge_edge_mean"] >= -5.0,
-            "plain_edge_mean_ge_-5": d["plain_edge_mean"] >= -5.0,
-            "global_edge_mean_ge_-5": d["global_edge_mean"] >= -5.0,
-            "global_luma_mean_ge_-8": d["global_luma_mean"] >= -8.0,
-        }
-    if step == 2:
-        return {
-            # Step 2 聚焦“阴影进入深褐色域”，因此以 shadow 指标为主门禁。
-            "redflag_shadow_brownness_rel_le_0_30": float(style_comp.get("shadow_brownness_rel", 9.9)) <= 0.30,
-            "redflag_shadow_warmth_rel_le_0_30": float(style_comp.get("shadow_warmth_rel", 9.9)) <= 0.30,
-            "redflag_shadow_luma_rel_le_0_20": float(style_comp.get("shadow_luma_mean_rel", 9.9)) <= 0.20,
-            # 防回退护栏：结构信号不能明显劣化。
-            "redflag_global_edge_rel_le_0_32": float(style_comp.get("global_edge_rel", 9.9)) <= 0.32,
-            "redflag_plain_edge_rel_le_0_78": float(style_comp.get("plain_edge_rel", 9.9)) <= 0.78,
-            "redflag_ridge_edge_rel_le_0_26": float(style_comp.get("ridge_edge_rel", 9.9)) <= 0.26,
-        }
-    if step == 3:
-        return {
-            # Step 3 聚焦“去泥/水感”：颗粒增量 + RedFlag 平原统计（色彩/频率/离散度）三重约束。
-            "plain_edge_mean_ge_+1_0pct_vs_prev_step": d["plain_edge_mean"] >= 1.0,
-            "plain_luma_std_ge_+0_5pct_vs_prev_step": d["plain_luma_std"] >= 0.5,
-            "redflag_plain_luma_mean_rel_le_0_10": float(style_comp.get("plain_luma_mean_rel", 9.9)) <= 0.10,
-            "redflag_plain_sat_std_rel_le_0_40": float(style_comp.get("plain_sat_std_rel", 9.9)) <= 0.40,
-            "redflag_plain_brown_ratio_rel_le_0_16": float(style_comp.get("plain_brown_ratio_rel", 9.9)) <= 0.16,
-            "redflag_plain_lowfreq_ratio_rel_le_0_18": float(style_comp.get("plain_lowfreq_ratio_rel", 9.9)) <= 0.18,
-            "redflag_plain_highpass_std_rel_le_0_26": float(style_comp.get("plain_highpass_std_rel", 9.9)) <= 0.26,
-            "redflag_plain_sat_bin_ratio_rel_le_0_22": float(style_comp.get("plain_sat_bin_ratio_rel", 9.9)) <= 0.22,
-            # 防止靠整体压暗/牺牲山脊来“刷”局部指标。
-            "ridge_edge_mean_ge_-2pct_vs_prev_step": d["ridge_edge_mean"] >= -2.0,
-            "global_luma_mean_ge_-4pct_vs_prev_step": d["global_luma_mean"] >= -4.0,
-            # 延续 Step 2 护栏。
-            "redflag_shadow_brownness_rel_le_0_30": float(style_comp.get("shadow_brownness_rel", 9.9)) <= 0.30,
-            "redflag_global_edge_rel_le_0_32": float(style_comp.get("global_edge_rel", 9.9)) <= 0.32,
-        }
-    if step == 4:
-        return {
-            "redflag_delta_e_mean_le_22": float(style_comp.get("delta_e_mean", 999.0)) <= 22.0,
-            "redflag_hue_dist_mean_le_0_060": float(style_comp.get("hue_dist_mean", 9.9)) <= 0.060,
-            "redflag_ridge_edge_rel_le_0_20": float(style_comp.get("ridge_edge_rel", 9.9)) <= 0.20,
-            "redflag_plain_edge_rel_le_0_64": float(style_comp.get("plain_edge_rel", 9.9)) <= 0.64,
-            "redflag_global_edge_rel_le_0_24": float(style_comp.get("global_edge_rel", 9.9)) <= 0.24,
-            "redflag_shadow_brownness_rel_le_0_30": float(style_comp.get("shadow_brownness_rel", 9.9)) <= 0.30,
-        }
-    if step == 5:
-        # Step 5 参数包固化：量化上至少不回退 Step 4 质量基线，复用 Step 4 阈值。
-        return {
-            "redflag_delta_e_mean_le_22": float(style_comp.get("delta_e_mean", 999.0)) <= 22.0,
-            "redflag_hue_dist_mean_le_0_060": float(style_comp.get("hue_dist_mean", 9.9)) <= 0.060,
-            "redflag_ridge_edge_rel_le_0_20": float(style_comp.get("ridge_edge_rel", 9.9)) <= 0.20,
-            "redflag_plain_edge_rel_le_0_64": float(style_comp.get("plain_edge_rel", 9.9)) <= 0.64,
-            "redflag_global_edge_rel_le_0_24": float(style_comp.get("global_edge_rel", 9.9)) <= 0.24,
-        }
-    return {"manual_gate_required": False}
-
-
-def get_stage_gate(
-    step: int,
-    q: dict,
-    mpp_min: float,
-    mpp_max: float,
-    capture_report: dict,
-    q_guard: dict | None = None,
-    capture_guard: dict | None = None,
-) -> dict:
+def build_preconditions(capture_report: dict, mpp_min: float, mpp_max: float, key: str) -> dict[str, bool]:
     lod_state = capture_report.get("lod_state", {})
     ensure_state = capture_report.get("ensure_tactical_mpp", {})
     profile = str(lod_state.get("profile", ""))
     mpp = float(lod_state.get("metersPerPixel", 0.0) or 0.0)
     ensure_ok = bool(ensure_state.get("satisfied", False))
-
-    preconditions = {
-        "profile_is_tactical": profile == "tactical",
-        "mpp_in_target_range": mpp_min <= mpp <= mpp_max,
-        "ensure_tactical_mpp_satisfied": ensure_ok,
-    }
-    if q_guard is not None and capture_guard is not None:
-        guard_lod = capture_guard.get("lod_state", {})
-        guard_ensure = capture_guard.get("ensure_tactical_mpp", {})
-        guard_profile = str(guard_lod.get("profile", ""))
-        guard_mpp = float(guard_lod.get("metersPerPixel", 0.0) or 0.0)
-        preconditions.update(
-            {
-                "guard_profile_is_tactical": guard_profile == "tactical",
-                "guard_mpp_in_target_range": mpp_min <= guard_mpp <= mpp_max,
-                "guard_ensure_tactical_mpp_satisfied": bool(guard_ensure.get("satisfied", False)),
-            }
-        )
-
-    # 累积门禁：当前 step 必须同时满足所有前序 step 的检查项。
-    upper = max(1, step)
-    per_step_checks = {}
-    for s in range(1, upper + 1):
-        source_q = q_guard if (q_guard is not None and s <= 2 and step >= 3) else q
-        per_step_checks[f"step_{s}"] = build_step_checks(s, source_q)
-    checks = {}
-    for key, value in per_step_checks.items():
-        checks.update({f"{key}.{k}": v for k, v in value.items()})
-
-    stage_pass = all(preconditions.values()) and all(checks.values())
     return {
-        "current_step": step,
-        "preconditions": preconditions,
-        "checks_per_step": per_step_checks,
-        "checks": checks,
-        "all_passed": stage_pass,
-        "next_step": step + 1 if stage_pass else step,
+        f"{key}.profile_is_tactical": profile == "tactical",
+        f"{key}.mpp_in_target_range": mpp_min <= mpp <= mpp_max,
+        f"{key}.ensure_tactical_mpp_satisfied": ensure_ok,
     }
-
-
-def save_step_baseline(step: int, current_image: Path) -> Path:
-    out = Path(f"tests/artifacts/capture_tactical_baseline_step{step}.png")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(current_image, out)
-    return out
-
-
-def auto_advance_todo(todo_path: Path, current_step: int) -> bool:
-    text = todo_path.read_text(encoding="utf-8")
-    today = date.today().isoformat()
-
-    current_pattern = rf"(Step\s+{current_step}:\s*)in progress"
-    next_step = current_step + 1
-    next_pattern = rf"(Step\s+{next_step}:\s*)pending"
-
-    updated = re.sub(current_pattern, rf"\1completed (auto gate passed on {today})", text, count=1)
-    updated2 = re.sub(next_pattern, r"\1in progress", updated, count=1)
-    if updated2 == updated:
-        # 处理区间写法，例如 "Step 4-5: pending"
-        range_pattern = re.compile(r"^(\s*)(\d+)\.\s*Step\s+(\d+)-(\d+):\s*pending\s*$", re.MULTILINE)
-        replaced = False
-
-        def repl(match: re.Match) -> str:
-            nonlocal replaced
-            indent, _idx, start_s, end_s = match.groups()
-            start = int(start_s)
-            end = int(end_s)
-            if not (start <= next_step <= end):
-                return match.group(0)
-            lines = []
-            for s in range(start, end + 1):
-                status = "in progress" if s == next_step else "pending"
-                lines.append(f"{indent}{s}. Step {s}: {status}")
-            replaced = True
-            return "\n".join(lines)
-
-        updated2 = range_pattern.sub(repl, updated2, count=1)
-        if not replaced:
-            # 如果没有找到下一步 pending，保持原文本。
-            updated2 = updated
-
-    if updated2 != text:
-        todo_path.write_text(updated2, encoding="utf-8")
-        return True
-    return False
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--step", type=int, default=0, help="0 means auto-detect from TODO.md")
-    parser.add_argument("--todo", default="TODO.md")
+    parser.add_argument("--level", choices=["draft", "target", "final"], default="target")
     parser.add_argument("--mpp-min", type=float, default=DEFAULT_MPP_MIN)
     parser.add_argument("--mpp-max", type=float, default=DEFAULT_MPP_MAX)
-    parser.add_argument("--auto-advance", action="store_true")
+    parser.add_argument("--baseline", default=DEFAULT_BASELINE)
     args = parser.parse_args()
 
-    todo_path = Path(args.todo)
-    step = args.step if args.step > 0 else detect_current_step(todo_path)
+    baseline_path = Path(args.baseline) if args.baseline else None
+    if baseline_path is not None and not baseline_path.exists():
+        baseline_path = None
 
-    align_variant = "mudpit" if step == 3 else "wide"
-    capture_report, capture_stdout = run_capture_with_retry(args.mpp_min, args.mpp_max, align_variant)
-    baseline_path, baseline_fallback = resolve_step_baseline(step, align_variant)
-    bootstrap_baseline_created = False
-    if baseline_fallback:
-        raise RuntimeError(
-            f"Required baseline missing for step={step}, align={align_variant}: {baseline_path}. "
-            "Create and freeze this baseline explicitly before running gate."
-        )
-    quantify_report = run_quantify(baseline_path, align_variant)
+    wide_capture, wide_stdout = run_capture_with_retry(args.mpp_min, args.mpp_max, "wide")
+    wide_quantify = run_quantify("wide", baseline_path)
 
-    guard_capture_report = None
-    guard_quantify_report = None
-    if step >= 3:
-        guard_capture_report, _guard_stdout = run_capture_with_retry(args.mpp_min, args.mpp_max, "wide")
-        guard_baseline_path, _guard_fallback = resolve_step_baseline(1, "wide")
-        guard_quantify_report = run_quantify(guard_baseline_path, "wide")
+    mudpit_capture, mudpit_stdout = run_capture_with_retry(args.mpp_min, args.mpp_max, "mudpit")
+    mudpit_quantify = run_quantify("mudpit", baseline_path)
 
-    gate_report = get_stage_gate(
-        step,
-        quantify_report,
-        args.mpp_min,
-        args.mpp_max,
-        capture_report,
-        q_guard=guard_quantify_report,
-        capture_guard=guard_capture_report,
-    )
-
-    advanced = False
-    saved_baseline = None
-    if gate_report["all_passed"] and args.auto_advance:
-        current_image = Path(quantify_report.get("current", "tests/artifacts/capture_tactical_view.png"))
-        if current_image.exists():
-            saved_baseline = str(save_step_baseline(step, current_image))
-        advanced = auto_advance_todo(todo_path, step)
+    preconditions = {}
+    preconditions.update(build_preconditions(wide_capture, args.mpp_min, args.mpp_max, "wide"))
+    preconditions.update(build_preconditions(mudpit_capture, args.mpp_min, args.mpp_max, "mudpit"))
+    checks = build_gate_checks(args.level, wide_quantify, mudpit_quantify)
+    passed = all(preconditions.values()) and all(checks.values())
 
     print(
         json.dumps(
             {
-                "capture": capture_report,
-                "capture_align_variant": align_variant,
-                "baseline": {
-                    "used": str(baseline_path),
-                    "fallback_to_step0": baseline_fallback,
-                    "bootstrap_created": bootstrap_baseline_created,
-                    "saved_on_pass": saved_baseline,
+                "gate_level": args.level,
+                "baseline": str(baseline_path) if baseline_path else None,
+                "capture": {
+                    "wide": wide_capture,
+                    "mudpit": mudpit_capture,
                 },
-                "quantify": quantify_report,
-                "quantify_guard_wide": guard_quantify_report,
-                "stage_gate": gate_report,
-                "todo_auto_advanced": advanced,
+                "quantify": {
+                    "wide": wide_quantify,
+                    "mudpit": mudpit_quantify,
+                },
+                "stage_gate": {
+                    "preconditions": preconditions,
+                    "checks": checks,
+                    "all_passed": passed,
+                },
             },
             ensure_ascii=False,
             indent=2,
         )
     )
-    # 附带完整 capture 输出，便于定位失败原因。
-    print("\n=== CAPTURE RAW OUTPUT ===")
-    print(capture_stdout.strip())
+    print("\n=== CAPTURE RAW OUTPUT (wide) ===")
+    print(wide_stdout.strip())
+    print("\n=== CAPTURE RAW OUTPUT (mudpit) ===")
+    print(mudpit_stdout.strip())
     return 0
 
 

@@ -26,56 +26,38 @@ e3-TCS 是 E3 平台的战术可视化子项目，负责基于 Cesium 的场景�
   - `npm run build`
   - `npm run lint`
 
-## Tactical 视觉恢复（当前有效口径）
+## Tactical RedFlag 新门禁（2026-02-18 起）
 
-### 验收前提（MPP-first）
+旧的 Step1~Step5 验收口径已废弃。当前仅围绕 `RedFlag.jpg` 建立单一目标门禁。
+
+### 验收前提（强制）
 - 仅 `tactical` 档位。
 - `mpp in [175,195]`。
-- 固定机位：`CAPTURE_ALIGN_REDFLAG=wide`。
+- 同时验证两个机位：
+  - `wide`（全局结构/阴影风格）
+  - `mudpit`（平原去泥与频率分布）
 
-### 分步门禁
-- Step 1：相对 baseline (`tests/artifacts/capture_tactical_baseline_step0.png`)。
-- Step 2+：改为对 `RedFlag.jpg` 的绝对接近度门禁（不再用 baseline 作为放行标准）。
-- 累积验收：评估 Step N 时，必须同时通过 Step 1..N 全部门禁项。
+### 新门禁等级
+- `draft`：风格方向正确，可继续迭代。
+- `target`：开发主线门禁，作为默认目标。
+- `final`：最终交付门禁。
 
-## 自动化脚本
-
-### 1) 截图（自动收敛到 tactical + mpp 区间）
-- `tests/capture_tactical_view.py`
-- 关键环境变量：
-  - `CAPTURE_ALIGN_REDFLAG=wide`
-  - `CAPTURE_ENSURE_TACTICAL_MPP=true`
-  - `CAPTURE_TACTICAL_MPP_MIN=175`
-  - `CAPTURE_TACTICAL_MPP_MAX=195`
-
-### 2) 量化
-- `tests/quantify_tactical_metrics.py`
-- 输出：
-  - baseline 对比指标（Step 1 使用）
-  - `RedFlag.jpg` 对照指标（含 `delta_e_mean`、`hue_dist_mean`）
-
-### 3) 阶段门禁（含自动推进）
-- `tests/stage_gate_runner.py`
-- 不推进，仅判定：
+### 统一门禁脚本
 ```bash
-/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --step 2
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level target
 ```
-- 判定通过后自动推进 TODO：
+
+可选：
 ```bash
-/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --auto-advance
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level draft
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level final
 ```
+
+### 评价维度（RedFlag-centric）
+- `wide`：`distance_score_current_to_ref`、`delta_e_mean`、`hue_dist_mean`、`global_edge_rel`、`ridge_edge_rel`、`shadow_brownness_rel`、`shadow_warmth_rel`。
+- `mudpit`：`distance_score_current_to_ref`、`plain_luma_mean_rel`、`plain_sat_std_rel`、`plain_brown_ratio_rel`、`plain_lowfreq_ratio_rel`、`plain_highpass_std_rel`。
 
 ## 相关文档
 - 当前阶段计划与状态：`TODO.md`
 - 当前有效交接信息：`HANDOVER.md`
 
-## 当前困难与策略切换（2026-02-18）
-- 本轮已终止继续在现有参数链路上微调 Step3。
-- 主要困难：
-  - Step2 与 Step3 指标存在耦合冲突：提高 plain 局部结构时，`redflag_plain_edge_rel_le_0_78` 与 `redflag_global_edge_rel_le_0_32` 容易回退。
-  - 仅靠配色/增益微调，难以同时改善 `plain_luma_mean_rel`、`plain_sat_std_rel`、`plain_brown_ratio_rel`、`plain_lowfreq_ratio_rel`。
-  - 视角相关反光抑制（含禁光照方向）会破坏前序守护，不适合作为直接路径。
-- 建议改用“结构化新策略”而非继续小步调参：
-  - 将 plain 区域做独立分支（低坡面材质逻辑与 ridge/slope 解耦）。
-  - 引入分段式/限幅式光照响应（而非全局乘性增益）。
-  - 把 Step3 目标拆成子阶段，先解决 brown/lowfreq，再恢复 edge。

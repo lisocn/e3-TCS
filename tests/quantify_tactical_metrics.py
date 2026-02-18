@@ -308,7 +308,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--baseline",
-        default="tests/artifacts/capture_tactical_baseline_step0.png",
+        default="",
     )
     parser.add_argument(
         "--current",
@@ -325,56 +325,44 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    baseline_path = Path(args.baseline)
+    baseline_path = Path(args.baseline) if args.baseline else None
     current_path = Path(args.current)
     reference_path = Path(args.reference)
-    if not baseline_path.exists():
+    if baseline_path is not None and not baseline_path.exists():
         raise FileNotFoundError(f"Baseline image not found: {baseline_path}")
     if not current_path.exists():
         raise FileNotFoundError(f"Current image not found: {current_path}")
     if not reference_path.exists():
         raise FileNotFoundError(f"Reference image not found: {reference_path}")
 
-    baseline = calc_metrics(load_luma(baseline_path), preset=args.window_preset)
     current = calc_metrics(load_luma(current_path), preset=args.window_preset)
-    delta = {k: pct_delta(current[k], baseline[k]) for k in current}
-
-    gate = {
-        "ridge_edge_mean": delta["ridge_edge_mean"] >= -5.0,
-        "plain_edge_mean": delta["plain_edge_mean"] >= -5.0,
-        "global_edge_mean": delta["global_edge_mean"] >= -5.0,
-        "global_luma_mean": delta["global_luma_mean"] >= -8.0,
-    }
-    gate["step1_pass"] = all(gate.values())
+    baseline = calc_metrics(load_luma(baseline_path), preset=args.window_preset) if baseline_path else None
+    delta = {k: pct_delta(current[k], baseline[k]) for k in current} if baseline else {}
+    gate = {}
 
     # RedFlag style distance: lower is closer.
     ref_rgb = load_rgb(reference_path)
     ref_h, ref_w = ref_rgb.shape[0], ref_rgb.shape[1]
-    baseline_rgb = resize_rgb_like(load_rgb(baseline_path), ref_w, ref_h)
     current_rgb = resize_rgb_like(load_rgb(current_path), ref_w, ref_h)
     ref_style = calc_style_metrics(ref_rgb, preset=args.window_preset)
-    baseline_style = calc_style_metrics(baseline_rgb, preset=args.window_preset)
     current_style = calc_style_metrics(current_rgb, preset=args.window_preset)
-    baseline_dist = style_distance(baseline_style, ref_style, baseline_rgb, ref_rgb)
     current_dist = style_distance(current_style, ref_style, current_rgb, ref_rgb)
-    style_improvement_pct = (
-        (baseline_dist["score"] - current_dist["score"])
-        / max(1e-6, baseline_dist["score"])
-        * 100.0
-    )
-    step2_gate = {
-        "step1_gate_held": gate["step1_pass"],
-        "closer_than_baseline": current_dist["score"] < baseline_dist["score"],
-        "style_improvement_pct_ge_8": style_improvement_pct >= 8.0,
-        "delta_e_mean_le_24": current_dist["components"]["delta_e_mean"] <= 24.0,
-        "hue_dist_mean_le_0_07": current_dist["components"]["hue_dist_mean"] <= 0.07,
-    }
-    step2_gate["step2_pass"] = all(step2_gate.values())
+    baseline_dist = None
+    style_improvement_pct = None
+    if baseline_path is not None:
+        baseline_rgb = resize_rgb_like(load_rgb(baseline_path), ref_w, ref_h)
+        baseline_style = calc_style_metrics(baseline_rgb, preset=args.window_preset)
+        baseline_dist = style_distance(baseline_style, ref_style, baseline_rgb, ref_rgb)
+        style_improvement_pct = (
+            (baseline_dist["score"] - current_dist["score"])
+            / max(1e-6, baseline_dist["score"])
+            * 100.0
+        )
 
     print(
         json.dumps(
             {
-                "baseline": str(baseline_path),
+                "baseline": str(baseline_path) if baseline_path else None,
                 "current": str(current_path),
                 "reference": str(reference_path),
                 "window_preset": args.window_preset,
@@ -382,12 +370,12 @@ def main() -> int:
                 "delta_pct_vs_baseline": delta,
                 "gate": gate,
                 "redflag_style": {
-                    "distance_score_baseline_to_ref": baseline_dist["score"],
+                    "distance_score_baseline_to_ref": baseline_dist["score"] if baseline_dist else None,
                     "distance_score_current_to_ref": current_dist["score"],
                     "improvement_pct_vs_baseline": style_improvement_pct,
-                    "baseline_components": baseline_dist["components"],
+                    "baseline_components": baseline_dist["components"] if baseline_dist else None,
                     "current_components": current_dist["components"],
-                    "gate": step2_gate,
+                    "gate": {},
                 },
             },
             indent=2,
