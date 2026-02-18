@@ -1,283 +1,294 @@
 # HANDOVER
 
-## 0. 当前结论（2026-02-15）
-- 地形法线数据链路已闭环：`layer.json` 包含 `octvertexnormals`，前端 `CesiumTerrainProvider.hasVertexNormals=true`。
-- 技术路线已收敛：
-  - 保留 `adaptive LOD + normalEC` 主链路。
-  - 不再使用“高度+梯度主导”渲染路线。
-- 当前阶段目标：进入 RedFlag 风格精修（配色、岩层质感、等高线节奏、近中远景过渡）。
+## 当前状态（2026-02-17）
+- 范围：仅 `tactical` 渲染链路，未改其他档位策略。
+- 阶段：Step 3 回退为 `in progress`（人工视觉复核判定“平原泥水感仍明显”）。
+- 基线：
+  - Step 1/2：沿用 `tests/artifacts/capture_tactical_baseline_step2.png` 体系。
+  - Step 3（mudpit 口径）：`tests/artifacts/capture_tactical_baseline_step2_mudpit.png`（首次已自动生成）。
 
-## 0.7 本轮续作（2026-02-17，档位边界与 tactical 运行约束）
-- 用户确认并落地新的 4 档边界（基于 zoom9 + tactical 100m/px 约束）：
-  - `global > 9000 m/px`
-  - `continental: 2800 ~ 9000 m/px`
-  - `regional: 700 ~ 2800 m/px`
-  - `tactical: 100 ~ 700 m/px`
-- 配置已更新：
-  - 文件：`src/config.ts`
-  - 字段：`terrain.mppThresholds = { global: 9000, continental: 2800, regional: 700 }`
-- tactical 缩放守卫状态：
-  - 文件：`src/core/TacticalViewer.ts`
-  - 已改为 `wheel` capture 阶段拦截（输入前拦截），目标行为是“100m/px 附近继续放大不响应”，不再“先响应后 reset”。
-  - 增加滚轮方向运行时自学习，兼容设备差异（重点针对 Mac 鼠标/触控滚轮方向不一致）。
-- HUD 高程状态：
-  - 鼠标移动过程不再实时刷新高程，改为短暂停留后精确刷新，避免移动过程错误负值。
-- 当前重点从“强压 seam”转向“地表风格收敛”：
-  - seam 问题在 zoom9 数据上只能止损，继续强抑制会明显牺牲细节。
-  - 后续优先推进 tactical 的“砂砾颗粒 + 古铜/深褐”质感收敛。
+## 当前有效验收口径
+- 固定前置条件：
+  - Step 1/2 使用 `CAPTURE_ALIGN_REDFLAG=wide`
+  - Step 3 使用 `CAPTURE_ALIGN_REDFLAG=mudpit`（针对平原泥坑区域）
+  - `profile=tactical`
+  - `mpp in [175,195]`
+  - `ensure_tactical_mpp_satisfied=true`
+- 累积门禁：
+  - 评估 `Step N` 时必须同时通过 `Step 1..N`。
+- baseline 规则：
+  - Step 1 使用 `capture_tactical_baseline_step0.png`
+  - Step 2+ 使用前一阶段通过图作为滚动 baseline
 
-## 0.8 本轮续作（2026-02-17，MPP 主轴量化验收）
-- 本轮将验收口径改为“先看 m/px，再看图像指标”，避免尺度不一致导致误判。
-- 量化前提：
-  - 仅比较 `tactical` 档位截图。
-  - 仅比较 `mpp in [175, 195]` 的样本。
-  - 机位固定 `CAPTURE_ALIGN_REDFLAG=wide`。
-- 指标定义（baseline=`tests/artifacts/capture_tactical_baseline_step0.png`）：
-  1. `global_luma_mean`：全图亮度均值（可读性）。
-  2. `global_luma_std`：全图亮度标准差（全局对比）。
-  3. `global_edge_mean`：全图 Sobel 边缘均值（结构清晰度）。
-  4. `plain_edge_mean`：平原窗口 Sobel 均值（泥/水平滑反指标）。
-  5. `ridge_edge_mean`：山脊窗口 Sobel 均值（山脊锐利主指标）。
-- 指标设计原因：
-  - `mpp` 先对齐后再比图，避免“缩放差”掩盖真实渲染变化。
-  - `ridge/plain` 分区指标可直接对应业务关注的“山脊锐利”与“平原不泥”。
-  - 亮度均值/方差用于防止通过“压暗/提亮”伪造锐度。
-- 当前进度（最新一轮，`mpp=182.24`, tactical）：
-  - `ridge_edge_mean`: `-6.79%`
-  - `plain_edge_mean`: `-6.24%`
-  - `global_edge_mean`: `-4.19%`
-  - `global_luma_mean`: `-2.96%`
-- 阶段结论：
-  - Step 1 尚未通过门槛（`ridge/plain` 仍低于 `-5%`）。
-  - 但相较前几轮（约 `-10%` 级别）已明显收敛，方向有效，继续在 Step 1 迭代。
+## Step 3 当前判定（人工复核后）
+- 先前 auto-pass 已作废，不作为推进 Step 4 依据。
+- 新门禁增加 RedFlag 平原观感约束（防止“指标过线但看起来仍像泥水”）：
+  - `RedFlag plain_luma_mean_rel <= 0.12`
+  - `RedFlag plain_sat_std_rel <= 0.45`
+  - `RedFlag plain_brown_ratio_rel <= 0.20`
+- 以当前图对比 RedFlag 的实测（平原窗口）：
+  - `plain_luma_mean_rel = 0.1628`（未过）
+  - `plain_sat_std_rel = 0.5594`（未过）
+  - `plain_brown_ratio_rel = 0.2313`（未过）
+- 结论：Step 3 未完成，继续优化。
 
-## 0.1 本轮续作（2026-02-16，颜色组）
-- 已完成“颜色组”第一轮精修，且保持单路径架构不变（未重新引入实验开关）。
-- 变更文件：
-  - `src/themes/tacticalMaterial.ts`
-  - `src/config.ts`
-- 关键收敛：
-  - 将 valley/ridge 配色混合与色调压缩参数提取为可配置项：
-    - `valleyContourMix`
-    - `ridgeAccentMix`
-    - `toneGamma`
-    - `toneShadowFloor`
-    - `toneHighlightCeiling`
-  - 在 `continental/regional/tactical` 三档中按颜色组目标做小幅调参：
-    - 山脊/谷地对比增强
-    - 明度高光上限压缩
-    - 暗部保真抬升
-- 验证结果：
-  - `npm run lint` ✅
-  - `npm run build` ✅
-  - `tests/capture_tactical_view.py` ✅
-    - 输出：`tests/artifacts/capture_tactical_view.png`
-    - LOD 最终状态：`tactical`（`mpp≈12.07`）
-    - `hasVertexNormals=true`，`extensions` 含 `octvertexnormals`
-
-## 0.2 本轮续作（2026-02-16，RedFlag 对照去虚线）
-- 对照 `RedFlag.jpg` 后识别的主要差距：
-  1. 地表存在规则化斑驳/虚线感（高频方向性纹理导致）。
-  2. 轮廓线在部分区域出现点状断续，连续性不足。
-  3. 与参考图相比，当前仍缺少战术网格与空地目标符号层（后续做 overlay 组）。
-- 本轮代码修正：
-  - 文件：`src/themes/tacticalMaterial.ts`
-  - 将方向性 `sin(uv.x*a + uv.y*b)` 纹理替换为 `value-noise/fbm`，消除大面积平行条纹伪影。
-  - 重构 contour 生成与抗锯齿：使用更平滑的 contour 场并调整线宽/AA，降低点状断续。
-  - 线色改为暖亮轮廓混色（`contourLineColor`），避免暗色虚点观感。
-  - 下调法线边缘增强强度，减少三角网边线被过度点亮。
-  - tactical 档位 contour 参数同步回调：
-    - `contourInterval: 56.0`
-    - `contourThickness: 2.6`
-- 验证：
-  - `npm run lint` ✅
-  - `npm run build` ✅
-  - `tests/capture_tactical_view.py` ✅（新截图已覆盖 `tests/artifacts/capture_tactical_view.png`）
-
-## 0.3 本轮续作（2026-02-16，RedFlag 机位对齐）
-- 目标：把视角先对齐到参考图，再做风格差距收敛。
-- 新增能力：
-  - `TacticalViewer.alignToRedFlagReference()` 支持双机位：
-    - `variant: 'wide'`：用于整体构图对照（推荐）
-    - `variant: 'focus'`：用于细节对照
-  - `TacticalViewer.clearTacticalOverlay()`：清理 RedFlag 叠加层
-  - Dev 全局接口：
-    - `window.alignRedFlagReference('wide' | 'focus')`
-    - `window.clearRedFlagOverlay()`
-    - `window.getCameraPose()`
-  - Dev 面板按钮：
-    - “对齐 RedFlag 视角”（默认应用 `wide`）
-- 脚本增强：
-  - `tests/capture_tactical_view.py` 新增环境变量
-    - `CAPTURE_ALIGN_REDFLAG=wide|focus`
-    - 用于直接生成对齐机位截图，方便回归比对
-- 实测产物：
-  - `tests/artifacts/capture_tactical_view.png`（wide）
-  - `tests/artifacts/capture_redflag_focus.png`（focus）
-- 当前结论：
-  - `wide` 机位已将 RedFlag 演示区域（网格+走廊+单元）稳定对准，适合作为后续材质差距对照基线。
-
-## 0.4 本轮续作（2026-02-16，基于对齐机位的收敛）
-- 目标：在 `CAPTURE_ALIGN_REDFLAG=wide` 基线下，继续缩小与 `RedFlag.jpg` 的视觉差距。
-- 本轮调整：
-  1. 光照组（`src/themes/tacticalMaterial.ts`）
-     - 提升侧光方向明暗分离：加强阳坡高光、加深阴坡暗部。
-     - 提高地形形态权重（slope 主导）与 relief/cavity 对比。
-     - 优化最终色调压缩，强化山脊体积感。
-  2. 配色组（`src/config.ts`）
-     - `continental/regional` 调整为更暖的黄棕主色。
-     - 同步调整 `toneGamma/toneShadowFloor/toneHighlightCeiling`，扩大明暗动态范围。
-  3. 视效组（`src/core/TacticalViewer.ts`）
-     - 提升 `continental/regional` 的 `verticalExaggeration`，降低 `maximumScreenSpaceError`，增强中远景起伏层次。
-  4. 叠加层组（`src/core/TacticalOverlayManager.ts`）
-     - 地面网格从青色改为琥珀色，收敛到参考图风格。
-     - 蓝色走廊适度加粗，强化“航迹走廊”主视觉。
-- 验证：
-  - `npm run lint` ✅
-  - `npm run build` ✅
-  - `CAPTURE_ALIGN_REDFLAG=wide tests/capture_tactical_view.py` ✅
-  - 新截图：`tests/artifacts/capture_tactical_view.png`（已覆盖）
-
-## 0.5 本轮续作（2026-02-16，远山高光层次）
-- 目标：在不改“单位符号/航迹”语义前提下，提升中远景山脊高光层次，对齐 `RedFlag.jpg` 的山体光影关系。
-- 主要改动：
-  1. 材质层（`src/themes/tacticalMaterial.ts`）
-     - 新增中远距脊线高光/阴影通道（`ridgeSunColor + distanceRidgeBoost + ridgeSunMask + ridgeShadowMask`）。
-     - 调整 `colorFar` 基底亮度，避免远景整体过暗导致层次丢失。
-     - 通过 `mid/far` 权重分别注入脊线高光与背光压暗，强化“远山光带”。
-  2. 配置层（`src/config.ts`）
-     - `continental/regional` 的 `colorRidge` 进一步偏暖提亮。
-     - `toneHighlightCeiling` 上调，提升远景阳坡亮部可见性。
-- 验证：
-  - `npm run lint` ✅
-  - `npm run build` ✅
-  - `CAPTURE_ALIGN_REDFLAG=wide tests/capture_tactical_view.py` ✅
-  - 新截图：`tests/artifacts/capture_tactical_view.png`（已覆盖）
-- 当前观测：
-  - 远处山脊亮带与背光分离度提升，画面层次更接近参考图；
-  - 仍可继续微调项：远山亮带强度与网格透明度平衡，避免“亮带过硬”。
-
-## 0.6 本轮续作（2026-02-16，亮带软化与网格降权）
-- 目标：继续收敛远山高光，但避免“高光硬边”与“网格抢画面”。
-- 调整内容：
-  1. 材质层（`src/themes/tacticalMaterial.ts`）
-     - 下调中远景脊线高光增益（`midRidgeGain/farRidgeGain`）。
-     - 新增 `ridgeSunSoft`，在尖锐脊线处软化高光。
-     - 同步减弱中远景脊线阴影压暗幅度，保留细节。
-  2. 叠加层（`src/core/TacticalOverlayManager.ts`）
-     - 网格透明度从 `0.44` 降至 `0.30`。
-     - 网格线宽从 `1.25` 降至 `1.15`。
-- 验证：
-  - `npm run lint` ✅
-  - `npm run build` ✅
-  - `E3_APP_URL=http://localhost:5174 CAPTURE_ALIGN_REDFLAG=wide tests/capture_tactical_view.py` ✅
-  - 新截图：`tests/artifacts/capture_tactical_view.png`（已覆盖）
-
-## 1. 本轮已完成的代码收敛
-
-### 1.1 配置层（移除实验分叉）
+## 本轮 tactical 参数改动
 - 文件：`src/config.ts`
-- 已移除：
-  - `stableGlobalBaseline`
-  - `enableGlobalMaterialAttempt`
-  - `forceProfile`
-  - `adaptiveLodMaxProfile`
-  - 相关运行时实验字段与分支逻辑
-- 保留：
-  - 单一路径配置：`adaptive LOD`
-  - `mppThresholds` + `lodProfiles`
-  - `enableGlobalFallback`（高空回退椭球，保留稳定性）
+- 仅 `terrain.lodProfiles.tactical.tacticalStyleOverrides`：
+  - `plainGrainGain: 1.30 -> 1.48 -> 1.80`
+  - `edgeEnhanceGain: 1.44 -> 1.52`
+  - `seamBandStrength: 0.04 -> 0.03 -> 0.01`
+  - `seamMatteStrength: 0.01 -> 0.00`
 
-### 1.2 Viewer 层（移除实验状态机）
-- 文件：`src/core/TacticalViewer.ts`
-- 已移除：
-  - stable/global experiment 相关状态与判断
-  - `forceProfile`、LOD cap 钳制等实验控制
-  - tactical 自动演示聚焦开关依赖
-- 保留：
-  - `adaptive LOD` 自动切档
-  - OOM 安全降级（`SAFE_GLOBAL_FALLBACK_WASM_OOM`）
-  - 高空椭球回退与地形就绪后重套主题
+## 工具链变更（本轮）
+- `tests/quantify_tactical_metrics.py`
+  - 新增 `plain_luma_std`、`plain_luma_mean`、`plain_sat_std`、`plain_brown_ratio` 及对应 RedFlag 相对差指标。
+- `tests/stage_gate_runner.py`
+  - Step 3 门禁改为“相对 baseline_step2 的平原颗粒增量 + RedFlag 平原观感约束 + Step2 护栏”。
+  - 新增按 step 选择截图机位（Step3=mudpit）和 `capture_align_variant` 输出。
+  - Step3 mudpit 口径下，若缺少基线会自动 bootstrap `capture_tactical_baseline_step2_mudpit.png` 并重抓一帧量化。
+- `tests/capture_tactical_view.py`
+  - 新增 `mudpit` 对齐机位。
+  - 新增锁定机位中心（经纬度+姿态）后仅调高度的 mpp 收敛策略，避免 zoom 导致区域漂移。
 
-### 1.3 主题层（移除实验贴图通道）
-- 文件：`src/themes/ThemeManager.ts`
-- 已移除：
-  - tacticalDetailImagery 低透明叠层
-  - debug overlay imagery 诊断层
-- 当前策略：
-  - tactical 仅保留正式材质与必要 fallback imagery。
+## 已验证命令
+- `npm run build`：通过
+- `npm run lint`：通过
 
-### 1.4 材质层（单一路径）
-- 文件：`src/themes/tacticalMaterial.ts`
-- 已收敛为单一正式材质：
-  - 以 `normalEC + lambert + slope + normal variation` 驱动
-  - 保留 contour/macro/micro 与近中远景过渡
-- 已移除：
-  - 高度链路依赖（`materialInput.height` 主导）
-  - 实验性 debug 材质分支
+## 下一步（继续 Step 3）
+- 目标：优先消除平原“泥水坑”观感，再考虑进入 Step 4。
+- 验收：必须先通过更新后的 Step 3 全量门禁。
 
-### 1.5 测试脚本（移除实验参数注入）
-- 文件：
-  - `tests/capture_tactical_view.py`
-  - `tests/visual_verification.py`
-  - `tests/lod_switch_benchmark.py`
-  - `tests/lod_perf_gate.py`
-  - `tests/lod_soak_test.py`
-  - `tests/stage2_matrix.py`
-- 已移除：实验性运行时注入参数（`forceProfile / terrainOperationMode / adaptiveLodMaxProfile / enableGlobalMaterialAttempt`）与对应验证分支。
+## 最新一轮结果（2026-02-17）
+- 机位与前置：
+  - Step3 使用 `mudpit`，`profile=tactical`，`mpp=182.32`，`ensure_tactical_mpp_satisfied=true`。
+  - Step1/2 通过 `wide` 守护评估，均通过。
+- Step3 主要失败：
+  - `plain_luma_mean_rel=0.1197`（阈值 `<=0.10`）
+  - `plain_sat_std_rel=0.9522`（阈值 `<=0.40`）
+  - `plain_brown_ratio_rel=0.2680`（阈值 `<=0.16`）
+  - `plain_highpass_std_rel=0.8098`（阈值 `<=0.26`）
+- 结论：仍是典型“泥面低离散度”问题，Step3 未通过。
 
-### 1.6 运行脚本
-- 文件：`tools/restart_server.sh`
-- 默认地形数据已切到最新：
-  - `/Users/wangshanping/terrain/webgis/e3_terrain_zoom9_octvertexnormals.mbtiles`
-- Vite 启动逻辑已修复：
-  - 使用 `nohup` 保持驻留
-  - PID=0 视为非法，避免误判
+## 续调进展（2026-02-17）
+- 已修复 Step3 机位流程：
+  - mudpit 机位可稳定满足 `profile=tactical` 且 `mpp in [175,195]`；
+  - Step1/2 改为 wide 守护评估，避免跨场景误判。
+- 最新续调结果（mudpit）：
+  - `global_edge_mean` 有提升（`+1.09%`），`ridge_edge_mean` 提升（`+1.92%`）；
+- 但 plain 指标回落：`plain_luma_std=-2.55%`、`plain_edge_mean=-3.21%`；
+- RedFlag 关键项仍失败：`plain_sat_std_rel=0.9523`、`plain_brown_ratio_rel=0.2680`、`plain_highpass_std_rel=0.8093`。
 
-## 2. 当前关键链路
-- 前端：`e3-TCS`
-- 地形服务：`../e3-gis`
-- 数据链路：`e3-TCS -> http://localhost:4444/terrain/ -> e3-gis -> MBTiles(含 octvertexnormals)`
+## 口径修正（已落地）
+- Step3 baseline 不再允许自动 bootstrap；缺失即失败。
+- 已显式冻结：`tests/artifacts/capture_tactical_baseline_step2_mudpit.png`。
+- Step3 量化窗口改为 `mudpit` 专用窗口（不再沿用 wide 窗口），避免错窗导致误判。
 
-## 3. 快速验证命令
+## 最新判定（mudpit 专用窗口）
+- 前置全部满足：`profile=tactical`、`mpp in [175,195]`、`ensure_tactical_mpp_satisfied=true`。
+- wide 守护（Step1/2）通过。
+- Step3 仍失败，主要失败项：
+  - `plain_luma_mean_rel=0.1480`（阈值 `<=0.10`）
+  - `plain_sat_std_rel=0.7296`（阈值 `<=0.40`）
+  - `plain_brown_ratio_rel=0.1820`（阈值 `<=0.16`）
+  - `plain_lowfreq_ratio_rel=0.3929`（阈值 `<=0.18`）
+  - `plain_sat_bin_ratio_rel=0.6364`（阈值 `<=0.22`）
+- 结论：泥面仍偏低离散、低频占比偏高，继续 Step3。
 
-### 3.1 启动
-```bash
-./tools/restart_server.sh
-```
+## 新增进展（2026-02-17）
+- `stage_gate_runner` 增加 capture 重试，wide/mudpit 两条链路前置更稳。
+- 本轮单变量（`plainChromaticDiversityGain`）结果：
+  - plain 指标变化很小：`plain_luma_std +0.40%`、`plain_edge -0.08%`；
+  - RedFlag 关键失败仍集中在 `plain_sat_std_rel / plain_brown_ratio_rel / plain_lowfreq_ratio_rel`。
+- 结论：单纯 chroma 分裂不足以去泥，下一轮应改前段 plain 结构分层权重与频率配比。
 
-### 3.2 基础连通
-```bash
-curl -i http://localhost:4444/terrain/layer.json
-curl -i http://localhost:5173
-```
+## 最新续调（2026-02-17）
+- 单变量：`plainFrequencyMixGain=0.55`（前段频率配比）。
+- 结果（mudpit）：
+  - `plain_luma_std`: `-0.95%`
+  - `plain_edge_mean`: `-0.70%`
+  - `plain_sat_std_rel=0.7303`（未过）
+  - `plain_brown_ratio_rel=0.1821`（未过）
+  - `plain_lowfreq_ratio_rel=0.3877`（未过）
+- 结论：该方向无效且有回退，需切换到 plain 分层权重重塑（而非频率配比微调）。
 
-### 3.3 视觉验收
-```bash
-/Users/wangshanping/_code/e3-TCS/.venv/bin/python /Users/wangshanping/_code/e3-TCS/tests/capture_tactical_view.py
-```
-- 默认截图输出目录：`tests/artifacts/`
+## 本轮新增（2026-02-17）
+- 单变量：`plainLayerExpansionGain=0.45`（前段 plain 分层扩展）。
+- 结果（mudpit）：
+  - `plain_luma_std +0.20%`，`plain_edge -1.28%`，`ridge_edge -1.94%`；
+  - `plain_sat_std_rel=0.7406`、`plain_brown_ratio_rel=0.1819`、`plain_lowfreq_ratio_rel=0.3817` 仍失败。
+- 结论：前段分层扩展单独使用不能解决泥面问题，需与 plain 频率/色彩离散联动设计。
 
-### 3.4 质量门禁
-```bash
-npm run lint
-npm run build
-```
+## 新增迭代（2026-02-17，最新）
+- tactical-only 参数续调（`src/config.ts`）：
+  - `plainMudBreakGain=0.18`
+  - `plainTintSplitGain=0.20`
+  - `plainMicroReliefGain=0.55`
+- 门禁前置：
+  - mudpit 主验收与 wide 守护均满足 `profile=tactical`、`mpp in [175,195]`、`ensure_tactical_mpp_satisfied=true`。
+- 量化结果（mudpit）：
+  - `global_luma_mean=-0.2789%`
+  - `global_luma_std=+0.0889%`
+  - `global_edge_mean=-0.2952%`
+  - `plain_luma_std=+0.4609%`
+  - `plain_edge_mean=-0.3948%`
+  - `ridge_edge_mean=-0.4254%`
+- Step3 关键失败项：
+  - `plain_edge_mean_ge_+1.0%` 未过
+  - `plain_luma_std_ge_+0.5%` 未过
+  - `plain_luma_mean_rel=0.1508`、`plain_sat_std_rel=0.7160`、`plain_brown_ratio_rel=0.1821`、`plain_lowfreq_ratio_rel=0.3929`、`plain_sat_bin_ratio_rel=0.6364` 均未过
+- 结论：Step3 仍未通过。
 
-### 3.5 清理测试截图
-```bash
-npm run test:artifacts:clean
-```
+- 失败尝试说明（已回退）：
+  - 尝试在 `src/themes/tacticalMaterial.ts` 增加 plain 低频块混色/亮度偏置后，出现 `ridge_edge` 守护退化；
+  - 已在同轮回退该 shader 修改，不保留该实验代码。
 
-## 4. 下一阶段（RedFlag 精修）
-按“每次只动一组参数”的方式推进：
-1. 颜色组：谷地/山脊对比、明度压缩曲线、暗部保真。
-2. 光照组：lambert 权重、cavity 抑制、边缘增强幅度。
-3. 纹理组：macro/micro 频率与强度，避免规则条纹。
-4. 等高线组：间隔与线宽，确保“辅助可读”而非“主视觉噪声”。
-5. 近中远景组：LOD 过渡平滑，避免切换观感突变。
+## 2026-02-18 续调记录
+- 尝试 A（参数增强，仅 tactical）：
+  - `plainGrainGain=1.42`、`plainMudBreakGain=0.34`、`plainTintSplitGain=0.34`、`plainChromaticDiversityGain=0.82`。
+  - 结果：`plain_luma_std` 提升到 `+0.7666%`，但 `plain_edge` 仍为负（`-0.6146%`）；Step3 未通过。
+- 尝试 B（shader plain 色相分叉）：
+  - 在 `tacticalMaterial` 新增 plain chroma field/de-brown 分叉后，`wide` 守护出现 `step_2.redflag_global_edge_rel_le_0_32=false`。
+  - 判定：影响前序守护，已回退。
+- 当前已回滚到稳定参数：
+  - `plainGrainGain=1.30`
+  - `plainMudBreakGain=0.18`
+  - `plainTintSplitGain=0.20`
+  - `plainMicroReliefGain=0.55`
+  - `plainChromaticDiversityGain=0.60`
+- 最新稳定量化（mudpit）：
+  - `global_luma_mean=-0.2787%`
+  - `global_luma_std=+0.0892%`
+  - `global_edge_mean=-0.2950%`
+  - `plain_luma_std=+0.4609%`
+  - `plain_edge_mean=-0.3948%`
+  - `ridge_edge_mean=-0.4254%`
+- 结论：Step1/2 累积守护通过，Step3 仍未通过，继续 Step3。
 
-## 5. 注意事项
-- 本仓库当前有多文件未提交改动，提交前先按功能分组检查 diff。
-- 不要重新引入旧实验开关，保持单路径可维护性。
-- 若再次出现 OOM，以稳定性优先，先保留安全降级再分析性能瓶颈。
+## 2026-02-18 追加轮次（轻量 plain 色彩分叉）
+- 变更：`src/themes/tacticalMaterial.ts`
+  - 在 plain tint 后新增小幅 warm/cool 分叉与去棕偏移，作用域限制在 plainMask。
+- 结果（mudpit）：
+  - `global_luma_mean=-0.2787%`
+  - `global_luma_std=+0.0896%`
+  - `global_edge_mean=-0.2952%`
+  - `plain_luma_std=+0.4611%`
+  - `plain_edge_mean=-0.3943%`
+  - `ridge_edge_mean=-0.4245%`
+- 门禁判定：
+  - Step1/Step2 累积守护通过；
+  - Step3 仍失败（`plain_edge_mean_ge_+1.0%`、`plain_luma_std_ge_+0.5%` 未过；RedFlag plain 系列约束仍未过）。
+- 结论：该改动影响幅度过小，未产生有效增益。
+
+## 2026-02-18 最新续调（结构增益微抬）
+- tactical-only 变更：
+  - `src/config.ts`
+    - `edgeEnhanceGain=1.48`
+    - `plainMicroReliefGain=0.62`
+    - `plainStructureGain=1.32`
+  - `src/themes/tacticalMaterial.ts`
+    - plain tint 后轻量 warm/cool 分叉与 de-brown 偏移（小权重）。
+- 量化结果（mudpit）：
+  - `global_luma_mean=-0.2615%`
+  - `global_luma_std=+0.1057%`
+  - `global_edge_mean=-0.2015%`
+  - `plain_luma_std=+0.4870%`
+  - `plain_edge_mean=-0.2508%`
+  - `ridge_edge_mean=-0.3272%`
+- 门禁判定：
+  - Step1/Step2 累积守护通过；
+  - Step3 仍失败，但较上一稳定轮次有小幅改善（plain_edge、plain_luma_std 更接近增量门槛）。
+
+## 2026-02-18 实验：地面禁光照可行性
+- 新增 tactical-only 能力：
+  - `plainLightingSuppress`（仅作用 plain 区，抑制 sun/shadow/warm/cool 与 relief 光照分量）。
+- 实测：
+  - `plainLightingSuppress=0.78`：视觉反光显著下降，但 Step2 wide 守护回退（`global_edge/plain_edge/ridge_edge` 三项失败）。
+  - `plainLightingSuppress=0.22`：回退减轻但仍触发 `redflag_plain_edge_rel` 失败。
+  - `plainLightingSuppress=0.00`：守护恢复（Step1/Step2 通过），作为当前稳定值保留。
+- 结论：
+  - 不能直接“禁用地面光照”；
+  - 下一步应做“仅抑制视角相关高光分量”的定向方案，避免破坏前序门禁。
+
+## 2026-02-18 实验：视角高光定向抑制
+- tactical-only 新增：
+  - `plainViewGlareSuppress`（`ndotv` 驱动的 plain 眩光抑制项）。
+- 结果：
+  - 当 `plainViewGlareSuppress=0.45`：Step2 wide 守护出现 `redflag_global_edge_rel_le_0_32=false`，仍有前序回退风险。
+  - 回退到 `plainViewGlareSuppress=0.00`：Step1/Step2 守护恢复通过。
+- 当前稳定参数：
+  - `plainLightingSuppress=0.00`
+  - `plainViewGlareSuppress=0.00`
+- 当前稳定量化（mudpit）：
+  - `global_luma_mean=-0.2617%`
+  - `global_luma_std=+0.1057%`
+  - `global_edge_mean=-0.2051%`
+  - `plain_luma_std=+0.4870%`
+  - `plain_edge_mean=-0.2508%`
+  - `ridge_edge_mean=-0.3272%`
+- 结论：反光抑制方向成立，但当前实现仍影响守护，后续需更窄范围（仅限定低坡 plain + 高亮项）实现。
+
+## 2026-02-18 当前收敛状态（最新）
+- 已回退项：
+  - `plainLightingSuppress` 与 `plainViewGlareSuppress` 实验链路已撤销，避免影响累计守护。
+- tactical 参数调整：
+  - `edgeEnhanceGain` 下调到 `1.20`（从 1.48 连续回调）。
+  - `plainMicroReliefGain` 提升到 `0.74`。
+- 最新量化（mudpit）：
+  - `global_luma_mean=-0.2541%`
+  - `global_luma_std=+0.0987%`
+  - `global_edge_mean=-0.2011%`
+  - `plain_luma_std=+0.4701%`
+  - `plain_edge_mean=-0.2279%`
+  - `ridge_edge_mean=-0.3184%`
+- 门禁状态：
+  - Step1/Step2 累积守护恢复通过；
+  - Step3 仍失败（plain 增量项与 RedFlag plain 约束未达标）。
+
+## 2026-02-18 最新进展（继续 Step3）
+- tactical-only 代码状态：
+  - `plainLightingSuppress/plainViewGlareSuppress` 已从 shader 主链路回退，避免 wide 守护回退风险。
+- tactical 参数状态（`src/config.ts`）：
+  - `edgeEnhanceGain=1.20`
+  - `plainMicroReliefGain=0.74`
+  - `plainGrainGain=1.48`
+  - `plainTintSplitGain=0.28`
+- 最新量化（mudpit）：
+  - `global_luma_mean=-0.2554%`
+  - `global_luma_std=+0.1324%`
+  - `global_edge_mean=+0.0113%`
+  - `plain_luma_std=+0.5545%`（已过 `+0.5%`）
+  - `plain_edge_mean=+0.0960%`（未达 `+1.0%`）
+  - `ridge_edge_mean=-0.0985%`
+- 门禁结论：
+  - Step1/Step2 累积守护通过；
+  - Step3 仍未通过（主要卡在 `plain_edge` 增量与 RedFlag plain 指标）。
+
+## 2026-02-18 终止尝试说明（切换策略前冻结点）
+- 已按要求终止继续微调，准备切换到新策略。
+- 冻结代码状态（最后一次已量化验证参数）：
+  - `edgeEnhanceGain=0.96`
+  - `normalDetailGain=1.34`
+  - `plainCrispGain=2.55`
+  - `plainGrainGain=1.42`
+  - `plainMicroReliefGain=0.92`
+  - `plainTintSplitGain=0.45`
+  - `plainChromaticDiversityGain=1.00`
+- 对应最近一轮量化（mudpit）：
+  - `global_luma_mean=-0.6712%`
+  - `global_luma_std=+0.4427%`
+  - `global_edge_mean=+0.9024%`
+  - `plain_luma_std=+1.6474%`
+  - `plain_edge_mean=+1.3649%`
+  - `ridge_edge_mean=+0.8954%`
+- 阶段门禁结论：
+  - Step1：通过。
+  - Step2：未通过（仅 `redflag_plain_edge_rel_le_0_78` 未过，当前 `0.7848`，超线很小）。
+  - Step3：未通过（`redflag_plain_luma_mean_rel / sat_std_rel / brown_ratio_rel / lowfreq_ratio_rel / sat_bin_ratio_rel` 未过）。
+- 当前困难点（导致继续微调收益很低）：
+  - 指标耦合明显：为了过 Step3 提升 plain 结构，会反向顶高 Step2 的 plain/global edge 约束。
+  - “泥坑感”本质是 plain 区域低频块状 + 棕色域占比偏高；仅增益和颜色参数难同时解决。
+  - 禁用/抑制地面光照会破坏前序守护，不是可持续路径。
+- 建议下一策略（待新任务执行）：
+  - 走“plain 独立着色分支”重构：把 plain 的低频破碎、色域分叉、光照响应单独设计，与 ridge/slope 解耦。
+  - 使用限幅的分段光照与局部 tone-map，避免全局调参联动失控。
