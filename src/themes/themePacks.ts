@@ -31,21 +31,12 @@ export const THEME_PACKS = {
             '--panel-blur': '10px'
         },
         tacticalStyle: {
-            contourInterval: 220.0,
-            contourThickness: 1.0,
-            macroGridDensity: 14.0,
-            macroGridWidth: 0.045,
-            microGridDensity: 82.0,
-            microGridWidth: 0.013,
             lodNear: 95000.0,
             lodMid: 360000.0,
             lodFar: 1350000.0,
             colorLow: '#324254',
             colorHigh: '#8ba4b8',
-            colorRidge: '#dce9f2',
-            colorContour: '#0f141b',
-            colorMacroGrid: '#54d4ff',
-            colorMicroGrid: '#79ff9e'
+            colorRidge: '#dce9f2'
         }
     },
     battlefieldSand: {
@@ -69,21 +60,12 @@ export const THEME_PACKS = {
             '--panel-blur': '6px'
         },
         tacticalStyle: {
-            contourInterval: 95.0,
-            contourThickness: 1.55,
-            macroGridDensity: 24.0,
-            macroGridWidth: 0.074,
-            microGridDensity: 138.0,
-            microGridWidth: 0.02,
             lodNear: 120000.0,
             lodMid: 460000.0,
             lodFar: 1500000.0,
             colorLow: '#6a5035',
             colorHigh: '#cfaa73',
-            colorRidge: '#f2d8a2',
-            colorContour: '#362417',
-            colorMacroGrid: '#f1cc62',
-            colorMicroGrid: '#6fd8ff'
+            colorRidge: '#f2d8a2'
         }
     }
 } as const satisfies Record<string, ThemePack>;

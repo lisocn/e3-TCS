@@ -262,8 +262,8 @@ export class TacticalViewer {
             Cartesian3.fromDegrees(-117.55, 36.92, 0.0)
         ]);
         const offset = variant === 'focus'
-            ? new HeadingPitchRange(CesiumMath.toRadians(58.0), CesiumMath.toRadians(-33.0), 98000.0)
-            : new HeadingPitchRange(CesiumMath.toRadians(64.0), CesiumMath.toRadians(-38.0), 228000.0);
+            ? new HeadingPitchRange(CesiumMath.toRadians(58.0), CesiumMath.toRadians(-25.0), 190000.0)
+            : new HeadingPitchRange(CesiumMath.toRadians(62.0), CesiumMath.toRadians(-27.0), 270000.0);
         this.viewer.camera.flyToBoundingSphere(redFlagArea, {
             offset,
             duration: useFlyTo ? 1.8 : 0.0
@@ -706,10 +706,10 @@ export class TacticalViewer {
         const pos = camera.positionCartographic;
         if (!pos) return;
         const isTactical = this.currentLodProfile === 'tactical';
-        const minHeight = isTactical ? 18000.0 : 2500.0;
+        const minHeight = isTactical ? 98000.0 : 2500.0;
         const maxHeight = Number.POSITIVE_INFINITY;
-        const pitchMin = isTactical ? CesiumMath.toRadians(-45.0) : Number.NEGATIVE_INFINITY;
-        const pitchMax = isTactical ? CesiumMath.toRadians(-20.0) : CesiumMath.toRadians(-8.0);
+        const pitchMin = isTactical ? CesiumMath.toRadians(-25.0) : Number.NEGATIVE_INFINITY;
+        const pitchMax = isTactical ? CesiumMath.toRadians(-25.0) : CesiumMath.toRadians(-8.0);
         const needsMinHeightClamp = Number.isFinite(pos.height) && pos.height < minHeight;
         const needsMaxHeightClamp = Number.isFinite(maxHeight) && Number.isFinite(pos.height) && pos.height > maxHeight;
         const needsPitchClamp = Number.isFinite(camera.pitch) && (camera.pitch < pitchMin || camera.pitch > pitchMax);
@@ -733,14 +733,19 @@ export class TacticalViewer {
     private applyTacticalVisualizationHints(profile: TerrainLodProfileName): void {
         // tactical 档位下提高地形可读性，避免近地贴视角时“看起来一片平”。
         if (profile === 'tactical') {
-            this.viewer.scene.verticalExaggeration = 1.85;
-            this.viewer.scene.globe.maximumScreenSpaceError = 1.6;
-            this.viewer.scene.globe.showSkirts = true;
-            // tactical 下最小缩放距离按 mpp=100 反推，避免输入设备差异导致继续放大。
-            const minHeightByMpp = this.estimateHeightForMetersPerPixel(100.0);
-            this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = Math.max(18000.0, minHeightByMpp);
-            this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
-            this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.0;
+            const controller = this.viewer.scene.screenSpaceCameraController;
+            this.viewer.scene.verticalExaggeration = 1.12;
+            // 降低 SSE，减少平地区块 LOD 边界引起的轴向伪线。
+            this.viewer.scene.globe.maximumScreenSpaceError = 0.35;
+            // Tactical 机位优先视觉干净度，关闭裙边可显著降低平地区块边界缝线。
+            this.viewer.scene.globe.showSkirts = false;
+            // tactical 最小距离固定为 98km（用户验收机位硬约束）。
+            controller.minimumZoomDistance = 98000.0;
+            controller.maximumZoomDistance = this.maxZoomOutHeight;
+            controller.inertiaZoom = 0.0;
+            // 交互层硬锁：tactical 固定俯仰，但保留旋转。
+            controller.enableTilt = false;
+            controller.enableRotate = true;
             return;
         }
         if (profile === 'regional') {
@@ -750,6 +755,8 @@ export class TacticalViewer {
             this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 500.0;
             this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
             this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
+            this.viewer.scene.screenSpaceCameraController.enableTilt = true;
+            this.viewer.scene.screenSpaceCameraController.enableRotate = true;
             return;
         }
         if (profile === 'continental') {
@@ -759,6 +766,8 @@ export class TacticalViewer {
             this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
             this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
             this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
+            this.viewer.scene.screenSpaceCameraController.enableTilt = true;
+            this.viewer.scene.screenSpaceCameraController.enableRotate = true;
             return;
         }
         this.viewer.scene.verticalExaggeration = 1.0;
@@ -767,14 +776,8 @@ export class TacticalViewer {
         this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
         this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = this.maxZoomOutHeight;
         this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
-    }
-
-    private estimateHeightForMetersPerPixel(targetMpp: number): number {
-        const frustum = this.viewer.camera.frustum as { fovy?: number };
-        const fovy = frustum.fovy ?? CesiumMath.toRadians(60.0);
-        const viewportHeight = Math.max(1, this.viewer.scene.canvas.clientHeight);
-        const height = (Math.max(0.001, targetMpp) * viewportHeight) / (2 * Math.tan(fovy / 2));
-        return Math.max(1.0, height);
+        this.viewer.scene.screenSpaceCameraController.enableTilt = true;
+        this.viewer.scene.screenSpaceCameraController.enableRotate = true;
     }
 
     private ensureTacticalObliqueView(profile: TerrainLodProfileName): void {
@@ -784,7 +787,7 @@ export class TacticalViewer {
         // 当用户几乎俯视地面时，地形起伏会被视觉压扁；进入 tactical 时自动拉到斜视角。
         if (!Number.isFinite(pitch) || pitch <= -0.55) return;
         const pos = camera.positionCartographic;
-        const targetHeight = CesiumMath.clamp(pos.height * 0.70, 18000.0, 32000.0);
+        const targetHeight = CesiumMath.clamp(pos.height * 1.00, 98000.0, 240000.0);
         const destination = Cartesian3.fromRadians(
             pos.longitude,
             pos.latitude,
@@ -793,8 +796,8 @@ export class TacticalViewer {
         camera.setView({
             destination,
             orientation: {
-                heading: camera.heading + CesiumMath.toRadians(8.0),
-                pitch: CesiumMath.toRadians(-34.0),
+                heading: camera.heading + CesiumMath.toRadians(4.0),
+                pitch: CesiumMath.toRadians(-25.0),
                 roll: 0.0
             }
         });

@@ -46,21 +46,12 @@ const defaultUiTokens: Record<(typeof REQUIRED_UI_TOKEN_KEYS)[number], string> =
 };
 
 const defaultTacticalStyle: TacticalMaterialOptions = {
-    contourInterval: 220.0,
-    contourThickness: 1.0,
-    macroGridDensity: 14.0,
-    macroGridWidth: 0.045,
-    microGridDensity: 82.0,
-    microGridWidth: 0.013,
     lodNear: 95000.0,
     lodMid: 360000.0,
     lodFar: 1350000.0,
     colorLow: '#324254',
     colorHigh: '#8ba4b8',
-    colorRidge: '#dce9f2',
-    colorContour: '#0f141b',
-    colorMacroGrid: '#54d4ff',
-    colorMicroGrid: '#79ff9e'
+    colorRidge: '#dce9f2'
 };
 
 /**

@@ -26,38 +26,88 @@ e3-TCS 是 E3 平台的战术可视化子项目，负责基于 Cesium 的场景�
   - `npm run build`
   - `npm run lint`
 
-## Tactical RedFlag 新门禁（2026-02-18 起）
+## Tactical RedFlag 重构（当前唯一口径）
 
-旧的 Step1~Step5 验收口径已废弃。当前仅围绕 `RedFlag.jpg` 建立单一目标门禁。
+当前进入“重构阶段”，不再采用旧的参数盲调与旧门禁驱动流程。  
+执行与验收以以下文档为准：
+- 总体策略：`docs/terrain_rendering_strategy.md`
+- 分阶段计划（含早否决）：`docs/redflag_rebuild_plan.md`
 
-### 验收前提（强制）
-- 仅 `tactical` 档位。
-- `mpp in [175,195]`。
-- 同时验证两个机位：
-  - `wide`（全局结构/阴影风格）
-  - `mudpit`（平原去泥与频率分布）
+重构原则：
+- 仅重构 `tactical + materialPreset=high`。
+- `global/continental/regional` 不受影响。
+- 先解决地形主渲染（山峰/峡谷/平坦区），网格后置叠加。
+- 严格按 `Layer-0 -> Layer-5` 顺序执行，不允许跳层。
 
-### 新门禁等级
-- `draft`：风格方向正确，可继续迭代。
-- `target`：开发主线门禁，作为默认目标。
-- `final`：最终交付门禁。
-
-### 统一门禁脚本
+当前阶段验证命令：
 ```bash
-/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level target
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/capture_tactical_view.py
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/quantify_tactical_metrics.py --window-preset focus
 ```
 
-可选：
+### 分层验收快速入口
+按层执行（不可跳层）：
 ```bash
-/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level draft
-/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level final
+# Layer-0
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level layer0
+
+# Layer-1（基于上一层通过结果）
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level layer1 --baseline tests/artifacts/layer0_wide.png
+
+# Layer-2
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level layer2 --baseline tests/artifacts/layer1_wide.png
+
+# Layer-3
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level layer3 --baseline tests/artifacts/layer2_wide.png
+
+# Layer-4
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level layer4 --baseline tests/artifacts/layer3_wide.png
+
+# Final
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/stage_gate_runner.py --level final --baseline tests/artifacts/layer4_wide.png
 ```
 
-### 评价维度（RedFlag-centric）
-- `wide`：`distance_score_current_to_ref`、`delta_e_mean`、`hue_dist_mean`、`global_edge_rel`、`ridge_edge_rel`、`shadow_brownness_rel`、`shadow_warmth_rel`。
-- `mudpit`：`distance_score_current_to_ref`、`plain_luma_mean_rel`、`plain_sat_std_rel`、`plain_brown_ratio_rel`、`plain_lowfreq_ratio_rel`、`plain_highpass_std_rel`。
+每层产物（自动落盘到 `tests/artifacts/`）：
+```bash
+<level>_wide.png
+<level>_mudpit.png
+<level>_focus.png
+<level>_wide_metrics.json
+<level>_mudpit_metrics.json
+<level>_focus_metrics.json
+<level>_gate_report.json
+```
+
+快速查看最近一层结果：
+```bash
+ls -lt tests/artifacts/*_gate_report.json | head -n 3
+```
+
+俯仰角自检（先跑这个，再看人工截图）：
+```bash
+/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/preflight_pitch_review.py
+```
+产物：
+```bash
+tests/artifacts/preflight_pitch_topdown.png
+tests/artifacts/preflight_pitch_uptilt.png
+tests/artifacts/preflight_pitch_report.json
+```
+
+阶段基线文件：
+```bash
+tests/artifacts/rebuild_stage_baseline_focus.json
+```
+
+## Capture 稳定性说明（2026-02-20）
+- `tests/capture_tactical_view.py` 已修复两类高频问题：
+  - `Execution context was destroyed`（Vite HMR 重载）已加自动重试。
+  - `wide` 对齐后机位异常导致无法收敛 tactical，已改为“机位锁定 + 回退机位”。
+- 当前判定“真实采集有效”的最小条件：
+  - `ProviderProbe.providerType = CesiumTerrainProvider`
+  - `LOD State.profile = tactical`
+  - `EnsureTacticalMpp.satisfied = true`（在 gate 场景下）
 
 ## 相关文档
 - 当前阶段计划与状态：`TODO.md`
 - 当前有效交接信息：`HANDOVER.md`
-

@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -17,6 +18,10 @@ def load_luma(path: Path) -> np.ndarray:
 
 
 def sobel_mean(luma: np.ndarray) -> float:
+    return float(sobel_map(luma).mean())
+
+
+def sobel_map(luma: np.ndarray) -> np.ndarray:
     padded = np.pad(luma, ((1, 1), (1, 1)), mode="edge")
     gx = (
         -1.0 * padded[:-2, :-2]
@@ -34,7 +39,7 @@ def sobel_mean(luma: np.ndarray) -> float:
         + 2.0 * padded[2:, 1:-1]
         + 1.0 * padded[2:, 2:]
     )
-    return float(np.hypot(gx, gy).mean())
+    return np.hypot(gx, gy)
 
 
 def crop_ratio(luma: np.ndarray, box: tuple[float, float, float, float]) -> np.ndarray:
@@ -54,7 +59,12 @@ def get_windows(preset: str) -> tuple[tuple[float, float, float, float], tuple[f
         ridge = (0.32, 0.20, 0.84, 0.46)
         plain = (0.30, 0.44, 0.84, 0.88)
         return ridge, plain
-    # default wide/focus
+    if key == "focus":
+        # focus 机位：专门覆盖“中部大平地 + 两侧山体边缘”，用于 layer0 水波纹/反光验收。
+        ridge = (0.55, 0.24, 0.90, 0.48)
+        plain = (0.34, 0.38, 0.86, 0.90)
+        return ridge, plain
+    # default wide
     ridge = (0.46, 0.18, 0.82, 0.46)
     plain = (0.14, 0.58, 0.50, 0.86)
     return ridge, plain
@@ -98,6 +108,31 @@ def active_bin_ratio(values: np.ndarray, bins: int = 24, min_bin_frac: float = 0
     total = max(1, int(hist.sum()))
     active = np.count_nonzero(hist >= int(total * min_bin_frac))
     return float(active / bins)
+
+
+def topk_color_coverage(rgb: np.ndarray, levels: int = 16, k: int = 6) -> float:
+    q = np.clip((rgb * (levels - 1)).round().astype(np.int32), 0, levels - 1)
+    code = q[..., 0] * levels * levels + q[..., 1] * levels + q[..., 2]
+    flat = code.reshape(-1)
+    _, counts = np.unique(flat, return_counts=True)
+    counts = np.sort(counts)[::-1]
+    return float(counts[:k].sum() / max(1, flat.size))
+
+
+def fft_grid_axis_ratio(luma: np.ndarray) -> float:
+    f = np.fft.fftshift(np.fft.fft2(luma))
+    mag = np.abs(f)
+    h, w = mag.shape
+    cy, cx = h // 2, w // 2
+    yy, xx = np.ogrid[:h, :w]
+    rr = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
+    rmin = min(h, w) * 0.06
+    rmax = min(h, w) * 0.42
+    hf_mask = (rr >= rmin) & (rr <= rmax)
+    axis_mask = (np.abs(yy - cy) <= 2) | (np.abs(xx - cx) <= 2)
+    total = float(mag[hf_mask].sum()) + 1e-6
+    axis_e = float(mag[hf_mask & axis_mask].sum())
+    return axis_e / total
 
 
 def resize_rgb_like(rgb: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
@@ -194,7 +229,15 @@ def calc_style_metrics(rgb: np.ndarray, preset: str = "wide") -> dict[str, float
     base = calc_metrics(luma, preset=preset)
     # Plain 区域窗口（与 plain_edge 一致），用于“泥水感”相关颜色统计。
     h, w, _ = rgb.shape
-    _ridge_box, plain_box = get_windows(preset)
+    ridge_box, plain_box = get_windows(preset)
+    rx0, ry0, rx1, ry1 = ridge_box
+    rix0 = max(0, min(w - 1, int(round(rx0 * w))))
+    riy0 = max(0, min(h - 1, int(round(ry0 * h))))
+    rix1 = max(rix0 + 1, min(w, int(round(rx1 * w))))
+    riy1 = max(riy0 + 1, min(h, int(round(ry1 * h))))
+    ridge_rgb3 = rgb[riy0:riy1, rix0:rix1, :]
+    ridge_luma = 0.2126 * ridge_rgb3[..., 0] + 0.7152 * ridge_rgb3[..., 1] + 0.0722 * ridge_rgb3[..., 2]
+    ridge_edge = sobel_map(ridge_luma)
     x0, y0, x1, y1 = plain_box
     ix0 = max(0, min(w - 1, int(round(x0 * w))))
     iy0 = max(0, min(h - 1, int(round(y0 * h))))
@@ -211,12 +254,59 @@ def calc_style_metrics(rgb: np.ndarray, preset: str = "wide") -> dict[str, float
     plain_hp_std = highpass_std_luma(plain_luma, scale=8)
     plain_lowfreq_ratio = plain_low_std / max(1e-6, float(plain_luma.std()))
     plain_sat_bin_ratio = active_bin_ratio(plain_sat, bins=20, min_bin_frac=0.01)
+    plain_edge = sobel_map(plain_luma)
+    plain_grid_axis_ratio = fft_grid_axis_ratio(plain_luma)
+    plain_edge_p30 = float(np.percentile(plain_edge, 30.0))
+    flat_mask_plain = plain_edge <= plain_edge_p30
+    plain_hp = plain_luma - down_up_blur_luma(plain_luma, scale=8)
+    if np.any(flat_mask_plain):
+        flat_roi_highpass_std = float(plain_hp[flat_mask_plain].std())
+        valley_roi_edge_mean = float(plain_edge[plain_luma <= np.percentile(plain_luma, 20.0)].mean())
+    else:
+        flat_roi_highpass_std = plain_hp_std
+        valley_roi_edge_mean = float(plain_edge.mean())
+
+    ridge_p75 = float(np.percentile(ridge_luma, 75.0))
+    ridge_p25 = float(np.percentile(ridge_luma, 25.0))
+    ridge_front_mask = ridge_luma >= ridge_p75
+    ridge_back_mask = ridge_luma <= ridge_p25
+    if np.any(ridge_front_mask):
+        ridge_front_luma_mean = float(ridge_luma[ridge_front_mask].mean())
+        ridge_roi_edge_mean = float(ridge_edge[ridge_front_mask].mean())
+    else:
+        ridge_front_luma_mean = float(ridge_luma.mean())
+        ridge_roi_edge_mean = float(ridge_edge.mean())
+    if np.any(ridge_back_mask):
+        ridge_back_luma_mean = float(ridge_luma[ridge_back_mask].mean())
+    else:
+        ridge_back_luma_mean = float(ridge_luma.mean())
+    front_back_luma_delta = ridge_front_luma_mean - ridge_back_luma_mean
+    rim_intensity_ratio = ridge_roi_edge_mean / max(1e-6, float(ridge_edge.mean()))
+    hue_deg = hsv[..., 0] * 360.0
+    sat = hsv[..., 1]
+    val = hsv[..., 2]
+    red_mask = (((hue_deg <= 20.0) | (hue_deg >= 340.0)) & (sat > 0.22) & (val > 0.18))
+    ochre_mask = ((hue_deg >= 28.0) & (hue_deg <= 54.0) & (sat > 0.18) & (val > 0.18))
+    near_white_ratio = float(((rgb[..., 0] > 0.90) & (rgb[..., 1] > 0.90) & (rgb[..., 2] > 0.90)).mean())
+    bright_clip_ratio = float((luma > 0.90).mean())
+    terrain_mask = (luma > 0.12) & (luma < 0.82) & (sat > 0.05)
+    terrain_rgb = rgb[terrain_mask] if np.any(terrain_mask) else rgb.reshape(-1, 3)
+    terrain_mean_r = float(terrain_rgb[:, 0].mean())
+    terrain_mean_g = float(terrain_rgb[:, 1].mean())
+    terrain_mean_b = float(terrain_rgb[:, 2].mean())
+    terrain_rg_ratio = terrain_mean_r / max(1e-6, terrain_mean_g)
+    terrain_gb_ratio = terrain_mean_g / max(1e-6, terrain_mean_b)
     return {
         **base,
+        "contrast_span_p10_p90": luma_span(luma, 10.0, 90.0),
         "cb_mean": float(cb.mean()),
         "cb_std": float(cb.std()),
         "cr_mean": float(cr.mean()),
         "cr_std": float(cr.std()),
+        "hue_bin_ratio": active_bin_ratio(hsv[..., 0], bins=24, min_bin_frac=0.01),
+        "sat_bin_ratio_global": active_bin_ratio(hsv[..., 1], bins=24, min_bin_frac=0.01),
+        "palette_top6_coverage": topk_color_coverage(rgb, levels=16, k=6),
+        "grid_axis_ratio": fft_grid_axis_ratio(luma),
         "shadow_luma_mean": shadow_luma_mean,
         "shadow_warmth": shadow_warmth,
         "shadow_brownness": shadow_brownness,
@@ -225,8 +315,23 @@ def calc_style_metrics(rgb: np.ndarray, preset: str = "wide") -> dict[str, float
         "plain_brown_ratio": float(plain_brown_mask.mean()),
         "plain_lowfreq_ratio": plain_lowfreq_ratio,
         "plain_highpass_std": plain_hp_std,
+        "plain_grid_axis_ratio": plain_grid_axis_ratio,
         "plain_luma_span_p10_p90": luma_span(plain_luma, 10.0, 90.0),
         "plain_sat_bin_ratio": plain_sat_bin_ratio,
+        "flat_roi_highpass_std": flat_roi_highpass_std,
+        "ridge_roi_edge_mean": ridge_roi_edge_mean,
+        "valley_roi_edge_mean": valley_roi_edge_mean,
+        "front_back_luma_delta": front_back_luma_delta,
+        "rim_intensity_ratio": rim_intensity_ratio,
+        "near_white_ratio": near_white_ratio,
+        "bright_clip_ratio": bright_clip_ratio,
+        "red_ratio": float(red_mask.mean()),
+        "ochre_ratio": float(ochre_mask.mean()),
+        "terrain_mean_r": terrain_mean_r,
+        "terrain_mean_g": terrain_mean_g,
+        "terrain_mean_b": terrain_mean_b,
+        "terrain_rg_ratio": terrain_rg_ratio,
+        "terrain_gb_ratio": terrain_gb_ratio,
         "luma_hist_l1_anchor": float(np.abs(hist).sum()),  # kept for shape compatibility
         "luma_hist": hist.tolist(),
     }
@@ -237,7 +342,7 @@ def style_distance(
     reference: dict[str, float],
     subject_rgb: np.ndarray,
     reference_rgb: np.ndarray,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     def rel(a: float, b: float) -> float:
         return abs(a - b) / max(1e-6, abs(b))
 
@@ -255,6 +360,7 @@ def style_distance(
     hue_dist_mean = float(hue_circ.mean())
 
     components = {
+        "contrast_span_rel": rel(subject["contrast_span_p10_p90"], reference["contrast_span_p10_p90"]),
         "luma_mean_rel": rel(subject["global_luma_mean"], reference["global_luma_mean"]),
         "luma_std_rel": rel(subject["global_luma_std"], reference["global_luma_std"]),
         "global_edge_rel": rel(subject["global_edge_mean"], reference["global_edge_mean"]),
@@ -264,6 +370,10 @@ def style_distance(
         "cb_std_rel": rel(subject["cb_std"], reference["cb_std"]),
         "cr_mean_rel": rel(subject["cr_mean"], reference["cr_mean"]),
         "cr_std_rel": rel(subject["cr_std"], reference["cr_std"]),
+        "hue_bin_ratio_rel": rel(subject["hue_bin_ratio"], reference["hue_bin_ratio"]),
+        "sat_bin_ratio_global_rel": rel(subject["sat_bin_ratio_global"], reference["sat_bin_ratio_global"]),
+        "palette_top6_coverage_rel": rel(subject["palette_top6_coverage"], reference["palette_top6_coverage"]),
+        "grid_axis_ratio_rel": rel(subject["grid_axis_ratio"], reference["grid_axis_ratio"]),
         "shadow_luma_mean_rel": rel(subject["shadow_luma_mean"], reference["shadow_luma_mean"]),
         "shadow_warmth_rel": rel(subject["shadow_warmth"], reference["shadow_warmth"]),
         "shadow_brownness_rel": rel(subject["shadow_brownness"], reference["shadow_brownness"]),
@@ -274,26 +384,49 @@ def style_distance(
         "plain_highpass_std_rel": rel(subject["plain_highpass_std"], reference["plain_highpass_std"]),
         "plain_luma_span_rel": rel(subject["plain_luma_span_p10_p90"], reference["plain_luma_span_p10_p90"]),
         "plain_sat_bin_ratio_rel": rel(subject["plain_sat_bin_ratio"], reference["plain_sat_bin_ratio"]),
+        "flat_roi_highpass_std_rel": rel(subject["flat_roi_highpass_std"], reference["flat_roi_highpass_std"]),
+        "ridge_roi_edge_mean_rel": rel(subject["ridge_roi_edge_mean"], reference["ridge_roi_edge_mean"]),
+        "valley_roi_edge_mean_rel": rel(subject["valley_roi_edge_mean"], reference["valley_roi_edge_mean"]),
+        "front_back_luma_delta_rel": rel(subject["front_back_luma_delta"], reference["front_back_luma_delta"]),
+        "rim_intensity_ratio_rel": rel(subject["rim_intensity_ratio"], reference["rim_intensity_ratio"]),
+        "near_white_ratio_rel": rel(subject["near_white_ratio"], reference["near_white_ratio"]),
+        "bright_clip_ratio_rel": rel(subject["bright_clip_ratio"], reference["bright_clip_ratio"]),
+        "red_ratio_rel": rel(subject["red_ratio"], reference["red_ratio"]),
+        "ochre_ratio_rel": rel(subject["ochre_ratio"], reference["ochre_ratio"]),
+        "terrain_mean_r_rel": rel(subject["terrain_mean_r"], reference["terrain_mean_r"]),
+        "terrain_mean_g_rel": rel(subject["terrain_mean_g"], reference["terrain_mean_g"]),
+        "terrain_mean_b_rel": rel(subject["terrain_mean_b"], reference["terrain_mean_b"]),
+        "terrain_rg_ratio_rel": rel(subject["terrain_rg_ratio"], reference["terrain_rg_ratio"]),
+        "terrain_gb_ratio_rel": rel(subject["terrain_gb_ratio"], reference["terrain_gb_ratio"]),
         "luma_hist_l1": hist_l1,
         "delta_e_mean": delta_e_mean,
         "hue_dist_mean": hue_dist_mean,
     }
     score = (
-        0.12 * components["luma_mean_rel"]
-        + 0.10 * components["luma_std_rel"]
-        + 0.10 * components["global_edge_rel"]
-        + 0.10 * components["plain_edge_rel"]
-        + 0.10 * components["ridge_edge_rel"]
-        + 0.05 * components["cb_mean_rel"]
-        + 0.05 * components["cb_std_rel"]
-        + 0.05 * components["cr_mean_rel"]
-        + 0.05 * components["cr_std_rel"]
-        + 0.06 * components["shadow_luma_mean_rel"]
-        + 0.06 * components["shadow_warmth_rel"]
-        + 0.06 * components["shadow_brownness_rel"]
-        + 0.10 * (components["delta_e_mean"] / 30.0)
-        + 0.10 * (components["hue_dist_mean"] / 0.10)
-        + 0.02 * components["luma_hist_l1"]
+        0.12 * components["near_white_ratio_rel"]
+        + 0.09 * components["bright_clip_ratio_rel"]
+        + 0.10 * components["red_ratio_rel"]
+        + 0.12 * components["ochre_ratio_rel"]
+        + 0.10 * components["grid_axis_ratio_rel"]
+        + 0.10 * components["plain_highpass_std_rel"]
+        + 0.06 * components["plain_lowfreq_ratio_rel"]
+        + 0.05 * components["plain_sat_std_rel"]
+        + 0.06 * components["terrain_mean_r_rel"]
+        + 0.06 * components["terrain_mean_g_rel"]
+        + 0.05 * components["terrain_mean_b_rel"]
+        + 0.04 * components["terrain_rg_ratio_rel"]
+        + 0.04 * components["terrain_gb_ratio_rel"]
+        + 0.03 * components["contrast_span_rel"]
+        + 0.03 * components["luma_mean_rel"]
+        + 0.02 * components["luma_std_rel"]
+        + 0.03 * components["ridge_edge_rel"]
+        + 0.03 * components["ridge_roi_edge_mean_rel"]
+        + 0.03 * components["valley_roi_edge_mean_rel"]
+        + 0.02 * components["front_back_luma_delta_rel"]
+        + 0.02 * components["rim_intensity_ratio_rel"]
+        + 0.02 * components["flat_roi_highpass_std_rel"]
+        + 0.04 * (components["delta_e_mean"] / 30.0)
+        + 0.04 * (components["hue_dist_mean"] / 0.10)
     )
     return {"score": float(score), "components": components}
 
@@ -321,7 +454,7 @@ def main() -> int:
     parser.add_argument(
         "--window-preset",
         default="wide",
-        help="Metric window preset: wide|mudpit",
+        help="Metric window preset: wide|focus|mudpit",
     )
     args = parser.parse_args()
 
@@ -348,6 +481,7 @@ def main() -> int:
     current_style = calc_style_metrics(current_rgb, preset=args.window_preset)
     current_dist = style_distance(current_style, ref_style, current_rgb, ref_rgb)
     baseline_dist = None
+    baseline_style = None
     style_improvement_pct = None
     if baseline_path is not None:
         baseline_rgb = resize_rgb_like(load_rgb(baseline_path), ref_w, ref_h)
@@ -374,6 +508,9 @@ def main() -> int:
                     "distance_score_current_to_ref": current_dist["score"],
                     "improvement_pct_vs_baseline": style_improvement_pct,
                     "baseline_components": baseline_dist["components"] if baseline_dist else None,
+                    "baseline_style_metrics": baseline_style,
+                    "reference_style_metrics": ref_style,
+                    "current_style_metrics": current_style,
                     "current_components": current_dist["components"],
                     "gate": {},
                 },

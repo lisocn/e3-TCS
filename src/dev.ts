@@ -22,6 +22,7 @@ declare global {
         };
         getLodRuntimeStats?: () => LodSwitchStats;
         getLodState?: () => { profile: string; metersPerPixel: number };
+        forceLodReconcile?: () => void;
         getTerrainRuntimeMode?: () => string;
         getRenderPerfStats?: () => RenderPerfStats;
     }
@@ -186,7 +187,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
         };
         window.getLodRuntimeStats = () => viewerInstance.getLodSwitchStats();
+        window.forceLodReconcile = () => {
+            const maybe = viewerInstance as unknown as { reconcileLodProfileNow?: () => void };
+            maybe.reconcileLodProfileNow?.();
+        };
         window.getLodState = () => ({
+            ...(window.forceLodReconcile ? (window.forceLodReconcile(), {}) : {}),
             profile: viewerInstance.getCurrentLodProfile(),
             metersPerPixel: viewerInstance.getCurrentMetersPerPixel()
         });

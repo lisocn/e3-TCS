@@ -1,59 +1,49 @@
 # HANDOVER
 
-## 当前状态（2026-02-18）
+## 当前阶段（2026-02-21）
 - 分支：`feat-tactical-redflag-mode`
-- 策略：已放弃旧 Step1~Step5 门禁体系，改为 RedFlag 单目标门禁。
-- 材质：`src/themes/tacticalMaterial.ts` 已重写为最小 RedFlag 主链路（硬分层 + HUD 网格 + 暗远景）。
-- 门禁状态：`draft` 通过，`target` 通过，`final` 通过。
+- 状态：已进入 Tactical 重构阶段（解耦管线），不再走旧参数盲调路线。
+- 目标：按 `Layer-0 -> Layer-5` 分层搭建并逐层与 `RedFlag_4k_style.jpg` 对照验收（地形主参考）。
+- 当前优先：`Layer-0` 平坦区稳定化 + `Layer-1/2` 山峰峡谷收敛。
+- 边界：仅 `tactical + materialPreset=high` 生效，不影响其他档位。
 
-## 新门禁口径（唯一有效）
-- 脚本：`tests/stage_gate_runner.py`
-- 命令：
-  - `.../python tests/stage_gate_runner.py --level draft`
-  - `.../python tests/stage_gate_runner.py --level target`
-  - `.../python tests/stage_gate_runner.py --level final`
-- 强制前置：
-  - `profile=tactical`
-  - `mpp in [175,195]`
-  - 同时验证 `wide` 与 `mudpit`
+## 临时回退记录（2026-02-22）
+- 用户决策：停止 `Ctrl+鼠标` 交互链路改造，避免继续消耗时间。
+- 已回退文件：`src/core/TacticalViewer.ts`
+- 已删除内容：
+  - `Ctrl+左拖` 自定义兜底旋转监听（`setupCtrlLeftDragRotateGuard`）
+  - `Ctrl` 相关状态字段与清理逻辑
+  - `CameraEventType / KeyboardEventModifier` 相关引用
+  - Tactical 中对 `tiltEventTypes/rotateEventTypes` 的 `Ctrl` 手势注入
+- 当前交互状态：
+  - Tactical 保持 `enableTilt=false`、`enableRotate=true`
+  - 不再承诺 `Ctrl+左拖` 可旋转（待后续独立方案）
 
-## 门禁结构
-- `wide` 关注：全局轮廓与色调风格
-  - `score`、`delta_e_mean`、`hue_dist_mean`
-  - `global_edge_rel`、`ridge_edge_rel`
-  - `shadow_brownness_rel`、`shadow_warmth_rel`
-- `mudpit` 关注：平原去泥与纹理频率
-  - `score`
-  - `plain_luma_mean_rel`、`plain_sat_std_rel`
-  - `plain_brown_ratio_rel`、`plain_lowfreq_ratio_rel`、`plain_highpass_std_rel`
+## 当前唯一执行口径
+- 总策略：`docs/terrain_rendering_strategy.md`
+- 执行计划：`docs/redflag_rebuild_plan.md`
+- 当前阶段以分层 `stage_gate_runner` 门禁作为自动化通过标准：
+  - `layer0 -> layer1 -> layer2 -> layer3 -> layer4 -> final`
+  - 必须满足前序层已通过
+  - 低层变更会自动使高层失效重验
 
-## 量化脚本变化
-- `tests/quantify_tactical_metrics.py`
-  - `--baseline` 改为可选。
-  - 始终输出 `redflag_style.current_components` 与 `distance_score_current_to_ref`。
-  - 不再内置旧 step gate 判定。
+## 当前实现要点
+- 主材质：`src/themes/tacticalMaterial.ts`
+  - 按层拆分：`Layer-0 SurfaceBase / Layer-1 MacroRelief / Layer-2 CrestValley / Layer-3 NearMidFar / Layer-4 LightingDesign / Layer-5 Overlay`
+  - 网格关闭（后续独立叠加）：
+    - `enableMacroGrid=false`
+    - `enableMicroGrid=false`
+    - `redFlagGridMix=0`
+    - `redFlagGridEmissive=0`
+- 参数入口：`src/config.ts`（tacticalStyleOverrides）
 
-## 使用建议
-- 日常迭代：先跑 `--level draft`，再冲 `--level target`。
-- 准备收口：仅以 `--level final` 作为是否可交付依据。
+## 验证方式（每轮必跑）
+1. `/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/capture_tactical_view.py`
+2. `/Users/wangshanping/_code/e3-TCS/.venv/bin/python tests/quantify_tactical_metrics.py --window-preset focus`
+3. 对照基线：`tests/artifacts/rebuild_stage_baseline_focus.json`
 
-## 最新量化快照（final passed）
-- final（通过）关键值：
-  - `wide.score=0.3936`
-  - `mudpit.score=0.4319`
-  - `wide.delta_e_mean=28.15`
-  - `wide.hue_dist_mean=0.0904`
-  - `wide.shadow_warmth_rel=0.2340`
-  - `wide.shadow_brownness_rel=0.0687`
-  - `mudpit.plain_luma_mean_rel=0.4014`
-  - `mudpit.plain_brown_ratio_rel=0.1898`
+## 早否决原则（强制）
+- 连续两轮关键指标无改善，立即停止当前子通道改造并切换路线。
+- 绝不允许“连续两天后才否决”的推进方式。
+- 具体阈值与止损动作见：`docs/redflag_rebuild_plan.md`
 
-## 本轮关键改动
-- `src/themes/tacticalMaterial.ts`
-  - 新增 shadow 定向暖化校正。
-  - 新增 plain 区域亮度提升与冷暖分叉扰动，提升平原离散和高频。
-  - 新增全局轻量亮度/对比重塑。
-- `src/config.ts`
-  - tactical 配色与 tone/minLighting 参数联动调整，提升与参考图整体接近度。
-- `tests/stage_gate_runner.py`
-  - `final` 阈值按当前场景可达范围重标定（仍严于 `target`）。

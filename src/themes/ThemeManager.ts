@@ -7,6 +7,7 @@ import {
     buildModuleUrl
 } from 'cesium';
 import { getTacticalMaterialFabric, type TacticalMaterialOptions } from './tacticalMaterial';
+import { RedFlagPostProcess } from './redFlagPostProcess';
 import type { SceneThemeRenderMode, TacticalMaterialPreset } from '../config';
 
 /**
@@ -20,9 +21,11 @@ import type { SceneThemeRenderMode, TacticalMaterialPreset } from '../config';
  */
 export class ThemeManager {
     private viewer: Viewer;
+    private redFlagPostProcess: RedFlagPostProcess;
 
     constructor(viewer: Viewer) {
         this.viewer = viewer;
+        this.redFlagPostProcess = new RedFlagPostProcess(viewer);
     }
 
     /**
@@ -104,7 +107,9 @@ export class ThemeManager {
         // material.uniforms.color = ...
 
         scene.globe.depthTestAgainstTerrain = false;
-        scene.globe.enableLighting = true; // 开启光照，增强山体与峡谷体积感
+        // 战术风格采用“恒定可读亮度”策略：
+        // 不依赖昼夜太阳光照，避免夜景看不清、白天逆光刺眼。
+        scene.globe.enableLighting = false;
 
         // 当本地 terrain 覆盖不完整时，会回退到 baseColor；使用主题低海拔色避免整球发黑。
         const fallbackBaseColor = tacticalStyle?.colorLow ?? '#1a1f24';
@@ -122,6 +127,14 @@ export class ThemeManager {
 
         // 背景与地表分离，避免地球轮廓不可辨识
         scene.backgroundColor = Color.fromCssColorString('#0b0f19');
+        // 仅 tactical 近景档位启用 RedFlag LUT。
+        // 其他档位（global/continental/regional）必须保持原有层次，避免被统一染色。
+        if (materialPreset === 'high') {
+            const lutIntensity = tacticalStyle?.redFlagLutIntensity ?? 0.28;
+            this.redFlagPostProcess.enable(lutIntensity);
+        } else {
+            this.redFlagPostProcess.disable();
+        }
         scene.requestRender();
     }
 
@@ -144,6 +157,7 @@ export class ThemeManager {
         scene.fog.enabled = true;
 
         scene.globe.depthTestAgainstTerrain = false;
+        this.redFlagPostProcess.disable();
 
         this.viewer.imageryLayers.removeAll();
         if (!baseLayerEnabled) {

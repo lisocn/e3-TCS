@@ -20,11 +20,18 @@ VITE_BIN="${PROJECT_ROOT}/node_modules/.bin/vite"
 # Web Server Configuration
 WEB_PORT=5173
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Colors (only enable on interactive TTY)
+if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
+    GREEN='\033[0;32m'
+    RED='\033[0;31m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m' # No Color
+else
+    GREEN=''
+    RED=''
+    YELLOW=''
+    NC=''
+fi
 
 echo -e "${YELLOW}[INFO] Project Root: ${PROJECT_ROOT}${NC}"
 

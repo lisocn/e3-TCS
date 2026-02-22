@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import time
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 
 def parse_bool_env(name: str, default: str) -> bool:
@@ -15,6 +15,27 @@ def ensure_screenshot_path(path: str, default_name: str) -> str:
     if screenshot_dir:
         os.makedirs(screenshot_dir, exist_ok=True)
     return resolved
+
+
+def evaluate_with_retry(page, expression: str, arg=None, retries: int = 4):
+    last_error: Exception | None = None
+    for _ in range(max(1, retries)):
+        try:
+            if arg is None:
+                return page.evaluate(expression)
+            return page.evaluate(expression, arg)
+        except PlaywrightError as exc:
+            msg = str(exc)
+            if "Execution context was destroyed" in msg or "Cannot find context with specified id" in msg:
+                # Dev server HMR may reload the page while capture is running; wait and retry.
+                page.wait_for_selector(".cesium-viewer", timeout=30000)
+                time.sleep(0.35)
+                last_error = exc
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("evaluate_with_retry failed without captured error.")
 
 
 def run() -> int:
@@ -37,6 +58,14 @@ def run() -> int:
     tactical_mpp_min = float(os.getenv("CAPTURE_TACTICAL_MPP_MIN", "175"))
     tactical_mpp_max = float(os.getenv("CAPTURE_TACTICAL_MPP_MAX", "195"))
     ensure_tactical_timeout = float(os.getenv("CAPTURE_ENSURE_TACTICAL_TIMEOUT", "30"))
+    hide_ui_for_capture = parse_bool_env("CAPTURE_HIDE_UI", "true")
+    capture_layer_stage_raw = os.getenv("CAPTURE_LAYER_STAGE", "").strip()
+    capture_layer_stage = None
+    if capture_layer_stage_raw:
+        try:
+            capture_layer_stage = float(capture_layer_stage_raw)
+        except ValueError:
+            capture_layer_stage = None
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -60,7 +89,8 @@ def run() -> int:
             )
 
         if align_redflag in ("mudpit", "step3_plain"):
-            aligned = page.evaluate(
+            aligned = evaluate_with_retry(
+                page,
                 """
                 () => {
                     if (!window.viewer || !window.Cesium) return false;
@@ -91,11 +121,35 @@ def run() -> int:
             aligned = page.evaluate(
                 """
                 (variant) => {
+                    if (!window.viewer || !window.Cesium) return false;
+                    const Cesium = window.Cesium;
                     if (window.alignRedFlagReference) {
                         window.alignRedFlagReference(variant);
-                        return true;
                     }
-                    return false;
+                    const fallback = variant === 'focus'
+                        ? { lon: -118.25, lat: 36.58, h: 190000.0, headingDeg: 58.0, pitchDeg: -25.0 }
+                        : { lon: -118.25, lat: 36.58, h: 270000.0, headingDeg: 62.0, pitchDeg: -27.0 };
+                    const c = window.viewer.camera.positionCartographic;
+                    const badHeight = !Number.isFinite(c.height) || c.height < 1000.0;
+                    if (badHeight) {
+                        window.viewer.camera.setView({
+                            destination: Cesium.Cartesian3.fromDegrees(fallback.lon, fallback.lat, fallback.h),
+                            orientation: {
+                                heading: Cesium.Math.toRadians(fallback.headingDeg),
+                                pitch: Cesium.Math.toRadians(fallback.pitchDeg),
+                                roll: 0.0
+                            }
+                        });
+                    }
+                    // 锁定机位，后续 ensure_tactical_mpp 走 setView 收敛，避免 zoom 连续叠加导致跑飞。
+                    window.__captureLockedView = {
+                        lon: fallback.lon,
+                        lat: fallback.lat,
+                        headingDeg: fallback.headingDeg,
+                        pitchDeg: fallback.pitchDeg,
+                        rollDeg: 0.0
+                    };
+                    return true;
                 }
                 """,
                 align_redflag,
@@ -103,7 +157,8 @@ def run() -> int:
             print(f"RedFlagAlign: variant={align_redflag} applied={aligned}")
             time.sleep(2.2)
         elif scan_nevada:
-            best_focus = page.evaluate(
+            best_focus = evaluate_with_retry(
+                page,
                 """
                 async () => {
                     if (!window.viewer || !window.Cesium) return null;
@@ -162,10 +217,10 @@ def run() -> int:
             time.sleep(1.2)
             # LOD 切档是逐级推进，补一段轻量 zoomIn 触发，确保进入 tactical 近景档位。
             for _ in range(8):
-                lod_state = page.evaluate("window.getLodState ? window.getLodState() : null")
+                lod_state = evaluate_with_retry(page, "window.getLodState ? window.getLodState() : null")
                 if lod_state and lod_state.get("profile") == "tactical":
                     break
-                    page.evaluate(
+                page.evaluate(
                     """
                     (() => {
                         const h = window.viewer.camera.positionCartographic.height;
@@ -189,7 +244,8 @@ def run() -> int:
             final_state = None
             entered_tactical = False
             while time.time() - start_ensure < ensure_tactical_timeout:
-                final_state = page.evaluate(
+                final_state = evaluate_with_retry(
+                    page,
                     "window.getLodState ? window.getLodState() : null"
                 ) or {}
                 profile = final_state.get("profile")
@@ -202,15 +258,17 @@ def run() -> int:
                     break
 
                 if mpp <= 0.0:
-                    page.evaluate("window.viewer.scene.requestRender()")
+                    evaluate_with_retry(page, "window.viewer.scene.requestRender()")
                     time.sleep(0.25)
                     continue
 
-                has_locked_view = page.evaluate(
+                has_locked_view = evaluate_with_retry(
+                    page,
                     "(() => !!(window.__captureLockedView && window.viewer && window.Cesium))()"
                 )
                 if has_locked_view:
-                    page.evaluate(
+                    evaluate_with_retry(
+                        page,
                         """
                         ({ profile, mpp, mppMin, mppMax }) => {
                             const lock = window.__captureLockedView;
@@ -219,17 +277,20 @@ def run() -> int:
                             const h = window.viewer.camera.positionCartographic.height;
                             const target = 0.5 * (mppMin + mppMax);
                             let desiredHeight;
+                            let desiredPitchDeg = lock.pitchDeg;
                             if (profile !== 'tactical') {
                                 // 先确保进入 tactical，再做 mpp 精调。
-                                desiredHeight = Math.max(35000.0, h * 0.84);
+                                // 不能把下限卡在 35km，否则会长期停留在 global/regional。
+                                desiredHeight = Math.max(4500.0, h * 0.78);
+                                desiredPitchDeg = Math.min(-56.0, lock.pitchDeg);
                             } else {
-                                desiredHeight = Math.min(260000.0, Math.max(35000.0, h * (target / Math.max(1.0, mpp))));
+                                desiredHeight = Math.min(260000.0, Math.max(4500.0, h * (target / Math.max(1.0, mpp))));
                             }
                             window.viewer.camera.setView({
                                 destination: Cesium.Cartesian3.fromDegrees(lock.lon, lock.lat, desiredHeight),
                                 orientation: {
                                     heading: Cesium.Math.toRadians(lock.headingDeg),
-                                    pitch: Cesium.Math.toRadians(lock.pitchDeg),
+                                    pitch: Cesium.Math.toRadians(desiredPitchDeg),
                                     roll: Cesium.Math.toRadians(lock.rollDeg)
                                 }
                             });
@@ -244,7 +305,8 @@ def run() -> int:
                 # 1) 若尚未进入 tactical，则先强推到更近景，确保触发档位切换；
                 # 2) 进入 tactical 后，再回调到目标 mpp 区间。
                 if not entered_tactical:
-                    page.evaluate(
+                    evaluate_with_retry(
+                        page,
                         """
                         (() => {
                             const h = window.viewer.camera.positionCartographic.height;
@@ -254,7 +316,8 @@ def run() -> int:
                     )
                 else:
                     if mpp > tactical_mpp_max:
-                        page.evaluate(
+                        evaluate_with_retry(
+                            page,
                             """
                             ({ mpp, mppMin, mppMax }) => {
                                 const h = window.viewer.camera.positionCartographic.height;
@@ -267,7 +330,8 @@ def run() -> int:
                             {"mpp": mpp, "mppMin": tactical_mpp_min, "mppMax": tactical_mpp_max},
                         )
                     elif mpp < tactical_mpp_min:
-                        page.evaluate(
+                        evaluate_with_retry(
+                            page,
                             """
                             ({ mpp, mppMin, mppMax }) => {
                                 const h = window.viewer.camera.positionCartographic.height;
@@ -280,7 +344,7 @@ def run() -> int:
                             {"mpp": mpp, "mppMin": tactical_mpp_min, "mppMax": tactical_mpp_max},
                         )
                     else:
-                        page.evaluate("window.viewer.scene.requestRender()")
+                        evaluate_with_retry(page, "window.viewer.scene.requestRender()")
                 time.sleep(0.42)
 
             ensure_report["elapsedSeconds"] = round(time.time() - start_ensure, 2)
@@ -291,7 +355,8 @@ def run() -> int:
             start_wait = time.time()
             last_state = {}
             while time.time() - start_wait < wait_tiles_timeout:
-                last_state = page.evaluate(
+                last_state = evaluate_with_retry(
+                    page,
                     """
                     (() => {
                         if (!window.viewer) return { viewerReady: false };
@@ -317,7 +382,57 @@ def run() -> int:
             }
 
         # 等待一次稳定渲染，避免抓到切档中间帧。
-        page.evaluate("window.viewer.scene.requestRender()")
+        if hide_ui_for_capture:
+            ui_hide = evaluate_with_retry(
+                page,
+                """
+                () => {
+                    const selectors = [
+                        '.hud-overlay',
+                        '.hud-toggle-anchor',
+                        '.cesium-widget-credits',
+                        '.cesium-viewer-toolbar',
+                        '.cesium-navigation-help-button-wrapper'
+                    ];
+                    let hidden = 0;
+                    for (const sel of selectors) {
+                        document.querySelectorAll(sel).forEach((el) => {
+                            const htmlEl = el;
+                            if (htmlEl && htmlEl.style) {
+                                htmlEl.style.display = 'none';
+                                hidden += 1;
+                            }
+                        });
+                    }
+                    return { hidden };
+                }
+                """
+            )
+            print(f"CaptureHideUI: {json.dumps(ui_hide, ensure_ascii=False)}")
+
+        if capture_layer_stage is not None:
+            stage_apply = evaluate_with_retry(
+                page,
+                """
+                (stageValue) => {
+                    if (!window.viewer || !window.viewer.scene || !window.viewer.scene.globe) {
+                        return { applied: false, reason: 'viewer_missing' };
+                    }
+                    const material = window.viewer.scene.globe.material;
+                    if (!material || !material.uniforms || typeof material.uniforms.redFlagLayerStage === 'undefined') {
+                        return { applied: false, reason: 'uniform_missing' };
+                    }
+                    material.uniforms.redFlagLayerStage = stageValue;
+                    window.viewer.scene.requestRender();
+                    return { applied: true, stageValue };
+                }
+                """,
+                capture_layer_stage,
+            )
+            print(f"LayerStageApply: {json.dumps(stage_apply, ensure_ascii=False)}")
+            time.sleep(0.35)
+
+        evaluate_with_retry(page, "window.viewer.scene.requestRender()")
         time.sleep(1.0)
 
         state = page.evaluate("window.getLodState ? window.getLodState() : null")
